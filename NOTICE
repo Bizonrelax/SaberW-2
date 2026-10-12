@@ -1,0 +1,33 @@
+SaberW-2
+Copyright (c) 2026 Bizonrelax (https://github.com/Bizonrelax/SaberW-2)
+
+This project's own code is released under The Unlicense (see LICENSE).
+
+This product bundles/uses the following third-party components.
+Attribution is provided here to comply with their licenses:
+
+1. Jackson Databind (com.fasterxml.jackson.core:jackson-databind), version 2.17.2
+   Authors: Tatu Saloranta and FasterXML contributors (com.fasterxml.jackson.core)
+   Project: https://github.com/FasterXML/jackson-databind
+   License: Apache License 2.0
+   License text: licenses/Apache-2.0.txt
+   Also depends on:
+   - Jackson Core (com.fasterxml.jackson.core:jackson-core), version 2.17.2 — Apache License 2.0
+   - Jackson Annotations (com.fasterxml.jackson.core:jackson-annotations), version 2.17.2 — Apache License 2.0
+
+2. JUnit 5 (org.junit.jupiter:junit-jupiter), version 5.10.3 — test scope only, NOT shipped in the JAR
+   Authors: JUnit Team (org.junit)
+   Project: https://junit.org/junit5/
+   License: Eclipse Public License 2.0 (EPL-2.0)
+   License text: licenses/EPL-2.0.txt
+
+3. Launch4j Maven plugin (com.akathist.maven.plugins.launch4j:launch4j-maven-plugin),
+   planned version 2.5.0 — build-time only (profile "exe"), NOT part of the runtime artifact.
+   Authors: Karsten Wong, Dave Trauder; maintained by akathist community
+   Project: http://launch4j.sourceforge.net/
+   License: BSD-style (launch4j license)
+   To be added to licenses/ upon first use (per Technical Specification section 21).
+
+Note: the reference tokenizer implementation in src/main/java/com/saberw/core/SaberTokenizer.java
+is taken from the SaberW-2 Technical Specification ("ДОПОЛНЕНИЕ №2"), authored by the project
+owner Bizonrelax as part of this project; it is not a third-party work.
