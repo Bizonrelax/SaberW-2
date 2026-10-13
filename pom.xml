@@ -13,7 +13,8 @@
   <description>Desktop app for bidirectional text compression for LLM chats (MVP core).</description>
 
   <properties>
-    <maven.compiler.release>17</maven.compiler.release>
+    <!-- ТЗ (п.1): Java 21+. Разрешено использовать Virtual Threads. -->
+    <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <jackson.version>2.17.2</jackson.version>
     <junit.version>5.10.3</junit.version>
@@ -62,11 +63,14 @@
         </configuration>
       </plugin>
 
-      <!-- Упаковка в EXE с поддержкой Java 17 -->
+      <!-- Упаковка в EXE (Launch4j). Официальный релизный артефакт в Maven Central:
+           com.akathist.maven.plugins.launch4j (репозиторий orphan-oss/launch4j-maven-plugin).
+           Старый com.akiban:launch4j-maven-plugin:2.5.1 отсутствует в Central — из-за него
+           сборка в GitHub Actions падала. -->
       <plugin>
-        <groupId>com.akiban</groupId>
+        <groupId>com.akathist.maven.plugins.launch4j</groupId>
         <artifactId>launch4j-maven-plugin</artifactId>
-        <version>2.5.1</version>
+        <version>2.6.0</version>
         <executions>
           <execution>
             <id>l4j-clui</id>
@@ -84,7 +88,7 @@
                 <addDependencies>true</addDependencies>
               </classPath>
               <jre>
-                <minVersion>17</minVersion>
+                <minVersion>21</minVersion>
                 <path>jre</path> <!-- Launch4j будет искать портативную JRE в локальной папке jre рядом с EXE -->
               </jre>
             </configuration>
