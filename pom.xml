@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://apache.org"
+         xmlns:xsi="http://w3.org"
+         xsi:schemaLocation="http://apache.org http://apache.org">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.saberw</groupId>
@@ -20,13 +20,13 @@
   </properties>
 
   <dependencies>
-    <!-- Jackson Databind — Apache License 2.0 (see NOTICE and licenses/) -->
+    <!-- Jackson Databind -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${jackson.version}</version>
     </dependency>
-    <!-- JUnit 5 — Eclipse Public License 2.0, test scope only (not shipped in the JAR) -->
+    <!-- JUnit 5 -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
@@ -47,6 +47,8 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
       </plugin>
+      
+      <!-- Создание исполняемого JAR -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
@@ -58,6 +60,36 @@
             </manifest>
           </archive>
         </configuration>
+      </plugin>
+
+      <!-- Упаковка в EXE с поддержкой Java 17 -->
+      <plugin>
+        <groupId>com.akiban</groupId>
+        <artifactId>launch4j-maven-plugin</artifactId>
+        <version>2.5.1</version>
+        <executions>
+          <execution>
+            <id>l4j-clui</id>
+            <phase>package</phase>
+            <goals>
+              <goal>launch4j</goal>
+            </goals>
+            <configuration>
+              <headerType>gui</headerType>
+              <outfile>target/SaberW-2.exe</outfile>
+              <jar>target/${project.build.finalName}.jar</jar>
+              <errTitle>SaberW-2 Error</errTitle>
+              <classPath>
+                <mainClass>com.saberw.gui.MainWindow</mainClass>
+                <addDependencies>true</addDependencies>
+              </classPath>
+              <jre>
+                <minVersion>17</minVersion>
+                <path>jre</path> <!-- Launch4j будет искать портативную JRE в локальной папке jre рядом с EXE -->
+              </jre>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
