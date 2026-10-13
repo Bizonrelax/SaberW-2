@@ -15,14 +15,14 @@ class RoundTripTest {
     }
 
     private static final CompressionSettings NO_NORMALIZE =
-            new CompressionSettings(3, 2, 4, 0, false);
+            new CompressionSettings(3, 2, 7, 0, false);
 
     @Test
     void russianText() {
         String text = "Программа сжимает текст. Программа сжимает текст эффективно, "
                 + "программа распаковывает текст обратно.";
         assertEquals(text.toLowerCase(), roundTrip(text,
-                new CompressionSettings(3, 2, 4, 0, true)));
+                new CompressionSettings(3, 2, 7, 0, true)));
     }
 
     @Test

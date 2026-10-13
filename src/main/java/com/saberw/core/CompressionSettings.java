@@ -10,16 +10,16 @@ public record CompressionSettings(
 
     /** Preset "max-cjk" (default preset, see Technical Specification section 7). */
     public static CompressionSettings maxCjk() {
-        return new CompressionSettings(3, 2, 4, 0, true);
+        return new CompressionSettings(3, 2, 7, 0, true);
     }
 
     /** Preset "code". */
     public static CompressionSettings code() {
-        return new CompressionSettings(4, 2, 4, 0, false);
+        return new CompressionSettings(4, 2, 7, 0, false);
     }
 
     /** Preset "chat". */
     public static CompressionSettings chat() {
-        return new CompressionSettings(3, 2, 3, 0, true);
+        return new CompressionSettings(3, 2, 5, 0, true);
     }
 }
