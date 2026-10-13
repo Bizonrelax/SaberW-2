@@ -27,7 +27,27 @@ public final class DictionaryJsonSerializer {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public record Root(String id, Instant createdAt, Dictionary dictionary) {}
+    public record Root(String id, Instant createdAt, Dictionary dictionary,
+                       CompressionSettings settings) {
+
+        /** Legacy constructor without settings: uses the default (max-cjk) settings. */
+        public Root(String id, Instant createdAt, Dictionary dictionary) {
+            this(id, createdAt, dictionary, CompressionSettings.maxCjk());
+        }
+
+        /** Convenience constructor keeping only the case-normalization flag. */
+        public Root(String id, Instant createdAt, Dictionary dictionary, boolean normalizeCase) {
+            this(id, createdAt, dictionary, withNormalizeCase(CompressionSettings.maxCjk(), normalizeCase));
+        }
+    }
+
+    private static CompressionSettings withNormalizeCase(CompressionSettings base, boolean normalizeCase) {
+        return new CompressionSettings(base.minWordLength(), base.minFrequency(),
+                base.minPhraseLength(), base.thresholdS(), normalizeCase);
+    }
+
+    /** Settings key in JSON; absent in older files means default (max-cjk) settings. */
+    private static final String SETTINGS_NODE = "settings";
 
     public String toJson(Root root) throws IOException {
         ObjectNode node = mapper.createObjectNode();
@@ -35,6 +55,12 @@ public final class DictionaryJsonSerializer {
         node.put("formatVersion", FORMAT_VERSION);
         node.put("id", root.id());
         node.put("createdAt", root.createdAt().toString());
+        ObjectNode settingsNode = node.putObject(SETTINGS_NODE);
+        settingsNode.put("minWordLength", root.settings().minWordLength());
+        settingsNode.put("minFrequency", root.settings().minFrequency());
+        settingsNode.put("minPhraseLength", root.settings().minPhraseLength());
+        settingsNode.put("thresholdS", root.settings().thresholdS());
+        settingsNode.put("normalizeCase", root.settings().normalizeCase());
 
         ObjectNode dictNode = node.putObject("dictionary");
         dictNode.put("updatedAt", Instant.now().toString());
@@ -85,6 +111,14 @@ public final class DictionaryJsonSerializer {
         }
         String id = node.path("id").asText();
         Instant createdAt = Instant.parse(node.path("createdAt").asText(Instant.EPOCH.toString()));
+        JsonNode sn = node.path(SETTINGS_NODE);
+        CompressionSettings defaults = CompressionSettings.maxCjk();
+        CompressionSettings settings = new CompressionSettings(
+                sn.path("minWordLength").asInt(defaults.minWordLength()),
+                sn.path("minFrequency").asInt(defaults.minFrequency()),
+                sn.path("minPhraseLength").asInt(defaults.minPhraseLength()),
+                sn.path("thresholdS").asInt(defaults.thresholdS()),
+                sn.path("normalizeCase").asBoolean(defaults.normalizeCase()));
 
         Dictionary dictionary = new Dictionary();
         for (JsonNode en : node.path("dictionary").path("entries")) {
@@ -106,7 +140,7 @@ public final class DictionaryJsonSerializer {
                     en.path("addedAt").asText(""),
                     en.path("sentToBot").asBoolean(false)));
         }
-        return new Root(id, createdAt, dictionary);
+        return new Root(id, createdAt, dictionary, settings);
     }
 
     public void save(Path file, Root root) throws IOException {

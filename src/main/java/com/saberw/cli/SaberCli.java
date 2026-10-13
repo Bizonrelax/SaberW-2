@@ -46,7 +46,7 @@ public final class SaberCli {
     private static void usage(PrintStream out) {
         out.println("SaberW-2 CLI");
         out.println("  saberw compress <file> [-mode max-cjk|code|chat] [-dict <in.saberw.json>] [-out <out.saberw.json>] [-text-out <compressed.txt>] [-bot-out <for-bot.txt>]");
-        out.println("  saberw decompress <dict.saberw.json> <compressed-file>");
+        out.println("  saberw decompress <dict.saberw.json> <compressed-file> [-out <restored.txt>]");
         out.println("  saberw selftest");
     }
 
@@ -82,6 +82,17 @@ public final class SaberCli {
             DictionaryJsonSerializer.Root base = new DictionaryJsonSerializer().load(dictIn);
             baseline = base.dictionary();
             id = base.id();
+            // Inherit compression settings from the baseline dictionary unless -mode was given explicitly.
+            boolean modeGiven = false;
+            for (String a : args) {
+                if ("-mode".equals(a)) {
+                    modeGiven = true;
+                    break;
+                }
+            }
+            if (!modeGiven) {
+                settings = base.settings();
+            }
         } else {
             DictionaryStore store = DictionaryStore.inWorkingDirectory();
             id = new DictionaryIdGenerator().next(store::isIdAvailable);
@@ -92,7 +103,7 @@ public final class SaberCli {
         Compressor.Result result = compressor.compress(text, baseline, com.saberw.core.CompressionProgress.NONE);
 
         DictionaryJsonSerializer.Root root =
-                new DictionaryJsonSerializer.Root(id, Instant.now(), result.dictionary());
+                new DictionaryJsonSerializer.Root(id, Instant.now(), result.dictionary(), settings);
         Path saved = dictOut != null ? dictOut : Path.of(id + DictionaryStore.FILE_SUFFIX);
         new DictionaryJsonSerializer().save(saved, root);
         if (textOut != null) {
@@ -123,8 +134,30 @@ public final class SaberCli {
         }
         DictionaryJsonSerializer.Root root = new DictionaryJsonSerializer().load(Path.of(args[1]));
         String compressed = Files.readString(Path.of(args[2]), StandardCharsets.UTF_8);
+
+        // Optional: -out <restored.txt> writes the restored text to a file instead of stdout.
+        Path outFile = null;
+        for (int i = 3; i < args.length; i++) {
+            switch (args[i]) {
+                case "-out" -> outFile = Path.of(args[++i]);
+                default -> {
+                    usage(out);
+                    System.exit(2);
+                }
+            }
+        }
+
         Decompressor decompressor = new Decompressor(root.dictionary());
-        out.println("OK decompressed chars=" + decompressor.decompress(compressed).length());
+        String restored = decompressor.decompress(compressed);
+
+        if (outFile != null) {
+            Files.writeString(outFile, restored, StandardCharsets.UTF_8);
+            out.println("OK decompressed chars=" + restored.length()
+                    + " saved: " + outFile.toAbsolutePath());
+        } else {
+            System.out.print(restored);
+            out.flush();
+        }
     }
 
     private static CompressionSettings parseMode(String mode) {
@@ -168,11 +201,12 @@ public final class SaberCli {
             out.println("FAIL: no real compression (orig=" + orig + " compressed=" + comp
                     + " entries=" + r.dictionary().size() + ")");
         }
-        // JSON round-trip through the serializer
+        // JSON round-trip through the serializer (including compression settings)
         try {
             DictionaryJsonSerializer ser = new DictionaryJsonSerializer();
+            CompressionSettings codeSettings = CompressionSettings.code();
             DictionaryJsonSerializer.Root root = new DictionaryJsonSerializer.Root(
-                    "ABC123", Instant.now(), r.dictionary());
+                    "ABC123", Instant.now(), r.dictionary(), codeSettings);
             String json = ser.toJson(root);
             DictionaryJsonSerializer.Root loaded = ser.fromJson(json);
             Dictionary dict = loaded.dictionary();
@@ -180,10 +214,21 @@ public final class SaberCli {
                 failures++;
                 out.println("FAIL: JSON round-trip lost entries");
             }
+            if (!loaded.settings().equals(codeSettings)) {
+                failures++;
+                out.println("FAIL: JSON round-trip lost settings: " + loaded.settings());
+            }
             String back = new Decompressor(dict).decompress(r.compressedText());
             if (!back.equals(corpus[0].toLowerCase(java.util.Locale.ROOT))) {
                 failures++;
                 out.println("FAIL: JSON-loaded dictionary broke round-trip");
+            }
+            // Legacy files without a "settings" node must load with default values
+            DictionaryJsonSerializer.Root legacy = ser.fromJson(
+                    json.replace("\"settings\" : {" , "\"legacyIgnored\" : {"));
+            if (!legacy.settings().equals(CompressionSettings.maxCjk())) {
+                failures++;
+                out.println("FAIL: missing settings node did not fall back to defaults");
             }
         } catch (Exception ex) {
             failures++;
