@@ -66,6 +66,8 @@ jobs:
           dist/SaberW-2.exe
           dist/*.jar
         fail_on_unmatched_files: false
+        overwrite_files: true    # при каждом пуше в main бинарники в Release перезаписываются свежими
+        make_latest: true        # тег latest всегда указывает на последнюю успешную сборку
         # GITHUB_TOKEN не имеет прав на публикацию Release (403) — используем PAT из секрета,
         # если он задан; иначе шаг пройдёт в warning (continue-on-error) и EXE будет доступен в Artifacts.
         token: ${{ secrets.RELEASE_PAT || github.token }}
