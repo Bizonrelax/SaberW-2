@@ -5,8 +5,11 @@ import com.saberw.model.Dictionary;
 import com.saberw.model.EntryValue;
 
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -38,8 +41,29 @@ public final class Compressor {
         return (long) frequency * (lengthChars - codeLen);
     }
 
-    /** A compression candidate: a raw string plus its frequency, character length and token count. */
-    private record Candidate(String raw, int frequency, int charLength, int tokenCount) {}
+    /** A compression candidate: a raw string plus its frequency, character length and token count. Mutable: F/S are recomputed each greedy iteration. */
+    static final class Candidate {
+        final String raw;
+        final int charLength;
+        final int tokenCount;
+        int frequency;
+        long savings;
+
+        Candidate(String raw, int frequency, int charLength, int tokenCount) {
+            this.raw = raw;
+            this.frequency = frequency;
+            this.charLength = charLength;
+            this.tokenCount = tokenCount;
+        }
+
+        String raw() { return raw; }
+        int frequency() { return frequency; }
+        void frequency(int f) { this.frequency = f; }
+        int charLength() { return charLength; }
+        int tokenCount() { return tokenCount; }
+        long savings() { return savings; }
+        void savings(long s) { this.savings = s; }
+    }
 
     public Result compress(String plainText) {
         return compress(plainText, new Dictionary(), CompressionProgress.NONE);
@@ -79,28 +103,38 @@ public final class Compressor {
         List<Candidate> phraseCandidates = findPhrases(tokens);
         report(progress, "phrases", 45);
 
-        // Deterministic tie-break: by S desc, then L desc, then F desc, then lexicographic (Technical Specification 3.2.4)
-        List<String> orderedWords = new ArrayList<>(candidates.keySet());
-        orderedWords.sort(Comparator
-                .comparingLong((String w) -> savingsNew(candidates.get(w)[0], candidates.get(w)[1], 1)).reversed()
-                .thenComparingInt((String w) -> -candidates.get(w)[1])
-                .thenComparingInt((String w) -> -candidates.get(w)[0])
-                .thenComparing(Comparator.naturalOrder()));
-
-        List<Candidate> orderedPhrases = new ArrayList<>(phraseCandidates);
-        orderedPhrases.sort(Comparator
-                .comparingLong((Candidate c) -> savingsNew(c.frequency(), c.charLength(), 1)).reversed()
+        // Unified candidate pool (Technical Specification 3.2.4): single WORD entries and
+        // multi-token phrases compete in ONE greedy loop. On every iteration the frequency
+        // of EVERY candidate is recomputed against the simulated token stream produced by
+        // the registrations made so far, the best-savings candidate wins and gets the next
+        // step-1 code. Candidates that drop below minFrequency/thresholdS are pruned.
+        Comparator<Candidate> bySavings = Comparator
+                .comparingLong((Candidate c) -> totalSavings(c)).reversed()
                 .thenComparingInt((Candidate c) -> -c.charLength())
                 .thenComparingInt((Candidate c) -> -c.frequency())
-                .thenComparing(Candidate::raw));
+                .thenComparingInt((Candidate c) -> -c.tokenCount())
+                .thenComparing(Candidate::raw);
 
-        // A phrase must not be a prefix of an already registered phrase: the longest-first
-        // matcher would make the shorter one unreachable. Keep only maximal phrases.
+        Map<String, Candidate> remaining = new LinkedHashMap<>();
+        for (Map.Entry<String, int[]> e : candidates.entrySet()) {
+            int[] fr = e.getValue();
+            remaining.put(e.getKey(), new Candidate(e.getKey(), fr[0], fr[1], 1));
+        }
+        // Maximal-phrase filter at the TOKEN level: a phrase is dropped only if some longer
+        // candidate matches it token-by-token as a contiguous slice. A mere string prefix is
+        // NOT enough: separators between tokens (e.g. ". ") make the raw strings look like
+        // prefixes while the extra token never actually matches.
+        List<Candidate> sortedByTokensDesc = new ArrayList<>(phraseCandidates);
+        sortedByTokensDesc.sort(Comparator.comparingInt(Candidate::tokenCount).reversed());
         List<Candidate> maximalPhrases = new ArrayList<>();
-        for (Candidate c : orderedPhrases) {
+        for (Candidate c : sortedByTokensDesc) {
+            String[] parts = c.raw().split(" ");
             boolean covered = false;
             for (Candidate longer : maximalPhrases) {
-                if (longer.raw().length() > c.raw().length() && longer.raw().startsWith(c.raw())) {
+                if (longer.tokenCount() <= c.tokenCount()) {
+                    break; // sorted desc: nothing further can strictly contain c's length
+                }
+                if (containsTokenSequence(longer.raw().split(" "), parts)) {
                     covered = true;
                     break;
                 }
@@ -109,7 +143,9 @@ public final class Compressor {
                 maximalPhrases.add(c);
             }
         }
-        orderedPhrases = maximalPhrases;
+        for (Candidate c : maximalPhrases) {
+            remaining.putIfAbsent(c.raw(), c);
+        }
 
         Dictionary dictionary = new Dictionary();
         Set<String> takenCodes = new HashSet<>();
@@ -132,51 +168,10 @@ public final class Compressor {
         knownValues.addAll(wordToCode.keySet());
         knownValues.addAll(phraseToCode.keySet());
 
-        for (String word : orderedWords) {
-            // Do not re-register anything already present in the (baseline) dictionary
-            if (knownValues.contains(word) || phraseToCode.containsKey(word)) {
-                continue;
-            }
-            String code = allocator.next(takenCodes);
-            takenCodes.add(code);
-            wordToCode.put(word, code);
-            dictionary.put(new DictEntry(
-                    code,
-                    new EntryValue(List.of(EntryValue.ValueToken.text(word))),
-                    1,
-                    candidates.get(word)[0],
-                    0,
-                    Instant.now().toString(),
-                    false));
-        }
-
-        // A phrase is worth registering only if it covers at least one occurrence that no
-        // registered word can cover (i.e. contains a token position not occupied by a coded
-        // word). Otherwise words alone explain all its occurrences and the phrase is redundant.
-        Set<String> codedWords = new HashSet<>(wordToCode.keySet());
-        codedWords.addAll(baselineValues(tokens));
-        for (Candidate c : orderedPhrases) {
-            if (knownValues.contains(c.raw())) {
-                continue; // already covered by the baseline dictionary
-            }
-            if (phraseFullyCoveredByWords(c.raw(), codedWords)) {
-                continue; // words-only compression explains every occurrence of this phrase
-            }
-            String code = allocator.next(takenCodes);
-            takenCodes.add(code);
-            phraseToCode.put(c.raw(), code);
-            dictionary.put(new DictEntry(
-                    code,
-                    new EntryValue(List.of(EntryValue.ValueToken.text(c.raw()))),
-                    1,
-                    c.frequency(),
-                    0,
-                    Instant.now().toString(),
-                    false));
-        }
-
+        // Phrase window bound must be set BEFORE the registration loop: simulateCodes()
+        // uses it to scan for already-registered entries.
         int maxPhraseTokens = settings.minPhraseLength();
-        for (Candidate c : orderedPhrases) {
+        for (Candidate c : phraseCandidates) {
             maxPhraseTokens = Math.max(maxPhraseTokens, c.tokenCount());
         }
         for (String p : phraseToCode.keySet()) {
@@ -184,11 +179,71 @@ public final class Compressor {
         }
         this.phraseMaxTokens = maxPhraseTokens;
 
+        // ---- Greedy registration loop (Technical Specification 3.2.4) ----
+        List<Candidate> appliedOrder = new ArrayList<>();
+        while (!remaining.isEmpty()) {
+            if (progress != null && progress.isCancelled()) {
+                break; // keep the dictionary built so far; the replace pass will abort below
+            }
+            // Recompute ALL frequencies against the simulated token stream. The window
+            // grows with every registration so that multi-token candidates keep being seen
+            // even when they are longer than minPhraseLength (findPhrases bound is only a
+            // starting point; without this growth long phrases would never reach the pool).
+            int simWindow = Math.max(this.phraseMaxTokens, maxTokenCount(remaining));
+            SimToken[] sim = simulateCodes(tokens, wordToCode, phraseToCode, null, simWindow);
+            for (Candidate c : remaining.values()) {
+                int f = countRawOccurrences(sim, c.raw());
+                c.frequency(f);
+                c.savings(totalSavings(c));
+            }
+            // Prune hopeless candidates, then pick the deterministic winner.
+            List<Candidate> pool = new ArrayList<>();
+            List<String> doomed = new ArrayList<>();
+            for (Map.Entry<String, Candidate> e : remaining.entrySet()) {
+                Candidate c = e.getValue();
+                if (c.frequency() < settings.minFrequency() || c.savings() <= settings.thresholdS()
+                        || c.savings() <= 0) {
+                    doomed.add(e.getKey());
+                } else {
+                    pool.add(c);
+                }
+            }
+            for (String key : doomed) {
+                remaining.remove(key);
+            }
+            if (pool.isEmpty()) {
+                break;
+            }
+            pool.sort(bySavings);
+            Candidate winner = pool.get(0);
+            String code = allocator.next(takenCodes);
+            takenCodes.add(code);
+            if (winner.tokenCount() == 1) {
+                wordToCode.put(winner.raw(), code);
+            } else {
+                phraseToCode.put(winner.raw(), code);
+            }
+            dictionary.put(new DictEntry(
+                    code,
+                    new EntryValue(List.of(EntryValue.ValueToken.text(winner.raw()))),
+                    1,
+                    winner.frequency(),
+                    0,
+                    Instant.now().toString(),
+                    false));
+            appliedOrder.add(winner);
+            remaining.remove(winner.raw());
+        }
+        report(progress, "register", 60);
+
+        // Baseline values that never occur in this text stay in the dictionary (session state);
+        // only genuinely NEW dead registrations are pruned below.
+        Set<String> baselineOnly = new HashSet<>(knownValues);
 
         // Greedy replacement over the token list. Escape atoms are never touched (they are
         // single ESCAPE_ATOM tokens). At each position we pick the best-scoring option among
         // {longest matching phrase, matching word}: the one with maximal net savings
-        // F*(L-C) - C >= 0, longest wins on ties. This guarantees the compressed output is
+        // L - 2 (C = 1), longest wins on ties. This guarantees the compressed output is
         // never longer than the input and that no registered entry ever goes unused.
         StringBuilder out = new StringBuilder(shielded.length());
         Map<String, Integer> appliedCount = new HashMap<>();
@@ -198,13 +253,12 @@ public final class Compressor {
             if (progress != null && progress.isCancelled()) {
                 throw new CompressionInterruptedException(partialResult(out, tokens, i, dictionary));
             }
-            int[] decision = chooseReplacement(tokens, i, wordToCode, phraseToCode);
+            int[] decision = chooseReplacement(tokens, i, wordToCode, phraseToCode, false);
             if (decision != null) {
                 int len = decision[0];
-                String code = len == 1 ? wordToCode.get(tokens.get(i).text())
-                                       : phraseToCode.get(joinRaw(tokens, i, len));
+                String raw = len == 1 ? tokens.get(i).text() : joinedWordRaw(tokens, i, len);
+                String code = len == 1 ? wordToCode.get(raw) : phraseToCode.get(raw);
                 out.append(code);
-                String raw = len == 1 ? tokens.get(i).text() : joinRaw(tokens, i, len);
                 appliedCount.merge(raw, 1, Integer::sum);
                 i += len;
             } else {
@@ -212,10 +266,10 @@ public final class Compressor {
                 i++;
             }
             if ((i & 0x3FF) == 0) {
-                report(progress, "replace", 45 + 55 * i / Math.max(1, n));
+                report(progress, "replace", 60 + 35 * i / Math.max(1, n));
             }
         }
-        report(progress, "replace", 100);
+        report(progress, "replace", 95);
 
         for (DictEntry entry : dictionary.entries()) {
             String value = entry.value().tokens().get(0).text();
@@ -237,6 +291,71 @@ public final class Compressor {
             if (cur != null && cur.frequency() < e.getValue()) {
                 dictionary.put(new DictEntry(cur.code(), cur.value(), cur.level(), e.getValue(),
                         cur.codeAppliedCount(), cur.addedAt(), cur.sentToBot()));
+            }
+        }
+
+        // Prune pass: a freshly registered entry that was never actually applied in the
+        // final left-to-right pass is a "dead code" - remove it from the dictionary.
+        // Baseline (session) entries are NEVER removed even if unused in this text.
+        Set<String> prunedValues = new HashSet<>();
+        for (Candidate c : appliedOrder) {
+            if (!appliedCount.containsKey(c.raw()) && !baselineOnly.contains(c.raw())) {
+                String code = c.tokenCount() == 1 ? wordToCode.remove(c.raw())
+                                                  : phraseToCode.remove(c.raw());
+                if (code != null) {
+                    dictionary.remove(code);
+                }
+                prunedValues.add(c.raw());
+            }
+        }
+        if (!prunedValues.isEmpty()) {
+            // A surviving registration whose occurrences were only visible through a now
+            // removed neighbour may have lost frequency; recompute and drop dead ones too.
+            Deque<String> queue = new ArrayDeque<>(prunedValues);
+            while (!queue.isEmpty()) {
+                queue.poll();
+                int window = this.phraseMaxTokens;
+                for (String v : phraseToCode.keySet()) {
+                    window = Math.max(window, countWordTokens(v));
+                }
+                SimToken[] sim = simulateCodes(tokens, wordToCode, phraseToCode, null, window);
+                Map<String, Integer> recomputed = new HashMap<>();
+                for (String val : wordToCode.keySet()) {
+                    recomputed.put(val, countRawOccurrences(sim, val));
+                }
+                for (String val : phraseToCode.keySet()) {
+                    recomputed.put(val, countRawOccurrences(sim, val));
+                }
+                List<String> toRemove = new ArrayList<>();
+                for (Map.Entry<String, Integer> e : recomputed.entrySet()) {
+                    String val = e.getKey();
+                    if (baselineOnly.contains(val)) {
+                        continue;
+                    }
+                    DictEntry en = dictionary.get(wordToCode.containsKey(val)
+                            ? wordToCode.get(val) : phraseToCode.get(val));
+                    if (en == null) {
+                        continue;
+                    }
+                    int f = e.getValue();
+                    if (f != en.frequency()) {
+                        dictionary.put(new DictEntry(en.code(), en.value(), en.level(), f,
+                                en.codeAppliedCount(), en.addedAt(), en.sentToBot()));
+                    }
+                    if (f < settings.minFrequency() && gainPerOccurrence(val) > 0) {
+                        toRemove.add(val);
+                    }
+                }
+                for (String val : toRemove) {
+                    String code = wordToCode.remove(val);
+                    if (code == null) {
+                        code = phraseToCode.remove(val);
+                    }
+                    if (code != null) {
+                        dictionary.remove(code);
+                        queue.add(val);
+                    }
+                }
             }
         }
 
@@ -278,36 +397,38 @@ public final class Compressor {
      * Returns candidates that satisfy the savings formula for step-1 codes.
      */
     List<Candidate> findPhrases(List<SaberTokenizer.Token> tokens) {
-        if (settings.minPhraseLength() < 2 || phraseMaxTokens == 0) {
+        if (settings.minPhraseLength() < 2) {
             return List.of(); // phrase pass disabled by settings
         }
-        // Map each WORD token to an id; non-word tokens break phrase runs.
-        Map<String, Integer> ids = new HashMap<>();
-        int[] stream = new int[tokens.size()];
-        java.util.Arrays.fill(stream, -1);
-        for (int i = 0; i < tokens.size(); i++) {
-            SaberTokenizer.Token t = tokens.get(i);
-            if (t.type() == SaberTokenizer.TokenType.WORD) {
-                stream[i] = ids.computeIfAbsent(t.text(), w -> ids.size());
-            }
-        }
-
         // Collect all WORD positions into a compact sequence with run-boundary awareness:
         // a phrase is a contiguous slice of the token list consisting only of WORD tokens.
         // We build the list of "word-only segments" and run suffix analysis inside each segment.
         Map<String, int[]> found = new LinkedHashMap<>(); // phraseRaw -> [frequency, charLength]
-        int segStart = -1;
-        for (int i = 0; i <= stream.length; i++) {
-            boolean isWord = i < stream.length && stream[i] >= 0;
-            if (isWord && segStart < 0) {
-                segStart = i;
+        Map<String, Integer> ids = new HashMap<>(); // word -> id in the compact sequence
+
+        // Compress the token stream into a word-only sequence, remembering for every word its
+        // index in the original token list. A candidate phrase must consist of CONSECUTIVE
+        // words in the original text (only separator atoms may sit between them); otherwise
+        // the replacement pass could never apply it. This also lets phrases span across
+        // ". " separators ("... в тексте. это ..."), which the old WORD-segment split missed.
+        List<Integer> wordPos = new ArrayList<>();
+        List<Integer> seq = new ArrayList<>();
+        for (int i = 0; i < tokens.size(); i++) {
+            SaberTokenizer.Token t = tokens.get(i);
+            if (t.type() != SaberTokenizer.TokenType.WORD) {
+                continue;
             }
-            if (!isWord && segStart >= 0) {
-                int segEnd = i; // exclusive
-                extractPhrasesFromSegment(tokens, stream, segStart, segEnd, ids, found);
-                segStart = -1;
+            int prevIdx = wordPos.isEmpty() ? -1 : wordPos.get(wordPos.size() - 1);
+            boolean adjacent = prevIdx < 0 || isSeparatorRun(tokens, prevIdx + 1, i);
+            if (!adjacent) {
+                flushWordRun(seq, wordPos, tokens, found);
+                seq.clear();
+                wordPos.clear();
             }
+            seq.add(ids.computeIfAbsent(t.text(), w -> ids.size()));
+            wordPos.add(i);
         }
+        flushWordRun(seq, wordPos, tokens, found);
 
         List<Candidate> result = new ArrayList<>();
         for (Map.Entry<String, int[]> e : found.entrySet()) {
@@ -321,20 +442,47 @@ public final class Compressor {
         return result;
     }
 
-    /** Suffix-array + LCP phrase extraction within one segment of consecutive WORD tokens. */
-    private void extractPhrasesFromSegment(List<SaberTokenizer.Token> tokens, int[] stream,
-                                           int segStart, int segEnd,
-                                           Map<String, Integer> ids,
-                                           Map<String, int[]> found) {
-        int len = segEnd - segStart;
-        if (len < settings.minPhraseLength()) {
+    /** Space-joined raw of {@code count} words starting at word index {@code base} of a run. */
+    private static String joinedWordRawAt(List<SaberTokenizer.Token> tokens, List<Integer> wordPos,
+                                          int base, int count) {
+        StringBuilder sb = new StringBuilder();
+        for (int k = base; k < base + count; k++) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(tokens.get(wordPos.get(k)).text());
+        }
+        return sb.toString();
+    }
+
+    /** True when every atom between positions [from, to) is a SEPARATOR (nothing structural). */
+    private static boolean isSeparatorRun(List<SaberTokenizer.Token> tokens, int from, int to) {
+        for (int k = from; k < to; k++) {
+            if (tokens.get(k).type() != SaberTokenizer.TokenType.SEPARATOR) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Runs suffix-array phrase extraction over one run of consecutive WORD tokens. */
+    private void flushWordRun(List<Integer> seqIds, List<Integer> wordPos,
+                              List<SaberTokenizer.Token> tokens, Map<String, int[]> found) {
+        if (seqIds.size() < settings.minPhraseLength()) {
             return;
         }
-        // Local id sequence for this segment
-        int[] seq = new int[len];
-        for (int k = 0; k < len; k++) {
-            seq[k] = stream[segStart + k];
+        int[] s = new int[seqIds.size()];
+        for (int k = 0; k < s.length; k++) {
+            s[k] = seqIds.get(k);
         }
+        extractPhrasesFromWords(s, wordPos, tokens, found);
+    }
+
+    /** Suffix-array + LCP phrase extraction within one run of consecutive WORD atoms. */
+    private void extractPhrasesFromWords(int[] seq, List<Integer> wordPos,
+                                         List<SaberTokenizer.Token> tokens,
+                                         Map<String, int[]> found) {
+        int len = seq.length;
         // Simple O(n log n) suffix array via sorting indices with comparator on suffixes
         Integer[] sa = new Integer[len];
         for (int k = 0; k < len; k++) {
@@ -364,7 +512,7 @@ public final class Compressor {
                 int freq = j - groupStart; // number of suffixes in the group
                 // The shared prefix of the group has length >= p; take exactly p tokens
                 int base = sa[groupStart];
-                String raw = joinRaw(tokens, segStart + base, p);
+                String raw = joinedWordRawAt(tokens, wordPos, base, p);
                 int charLen = raw.length();
                 if (charLen >= settings.minWordLength()) {
                     int[] prev = found.get(raw);
@@ -401,18 +549,205 @@ public final class Compressor {
     }
 
     /** Baseline dictionary values that consist of single words (already coded). */
-    private Set<String> baselineValues(List<SaberTokenizer.Token> tokens) {
-        return Set.of(); // baseline words are already inside wordToCode via seeding
+    // (removed: baseline seeding now feeds wordToCode/phraseToCode directly)
+
+    /** Total savings of a candidate at step-1 code length: S = F*(L-C) - C with C = 1. */
+    private static long totalSavings(Candidate c) {
+        return savingsNew(c.frequency(), c.charLength(), 1);
     }
 
-    /** True if every WORD token of the raw phrase (space-joined) is a registered/coded word. */
-    private static boolean phraseFullyCoveredByWords(String rawPhrase, Set<String> codedWords) {
-        for (String part : rawPhrase.split(" ")) {
-            if (!part.isEmpty() && !codedWords.contains(part)) {
-                return false;
+    /** Per-occurrence gain L - 2C (C = 1): positive means the entry shortens the text when applied. */
+    private static long gainPerOccurrence(String raw) {
+        return raw.length() - 1L;
+    }
+
+    /** Max token count among current pool candidates (simulation window bound). */
+    private static int maxTokenCount(Map<String, Candidate> pool) {
+        int m = 1;
+        for (Candidate c : pool.values()) {
+            m = Math.max(m, c.tokenCount());
+        }
+        return m;
+    }
+
+    /** True if {@code sub} occurs in {@code sup} as a contiguous token slice. */
+    private static boolean containsTokenSequence(String[] sup, String[] sub) {
+        outer:
+        for (int s = 0; s + sub.length <= sup.length; s++) {
+            for (int k = 0; k < sub.length; k++) {
+                if (!sup[s + k].equals(sub[k])) {
+                    continue outer;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** A simulated stream element: either a raw literal piece or a collapsed coded WORD token. */
+    private record SimToken(boolean isWord, String raw, String code) {}
+
+    /**
+     * Builds the simulated token stream after applying all registered entries exactly the
+     * way the real replacement pass does (chooseReplacement with ignoreGain=true, so every
+     * registration is counted as used at least once). Matches collapse into a single
+     * WORD-like token whose raw is the space-joined value; unregistered content stays
+     * verbatim. Separator atoms between words make phrase raws never match across them,
+     * which mirrors the tokenizer's WORD-segment structure.
+     */
+    private SimToken[] simulateCodes(List<SaberTokenizer.Token> tokens,
+                                     Map<String, String> wordToCode,
+                                     Map<String, String> phraseToCode,
+                                     Map<String, Integer> appliedOut,
+                                     int maxTokens) {
+        List<SimToken> out = new ArrayList<>(tokens.size());
+        int n = tokens.size();
+        int i = 0;
+        while (i < n) {
+            SaberTokenizer.Token t = tokens.get(i);
+            if (t.type() == SaberTokenizer.TokenType.WORD) {
+                int bestLen = 0;
+                String bestRaw = null;
+                String bestCode = null;
+                // Longest registered entry wins at every position (mirrors chooseReplacement).
+                // A candidate phrase is a slice of consecutive WORD atoms; when the tokenizer
+                // emits separators as their own atoms ("тексте. " -> WORD + SEPARATOR), the
+                // raw string of such a slice still contains no separator chars, so we compare
+                // token-by-token instead of joining raws and doing an exact map lookup.
+                int maxP = Math.min(maxTokens, n - i);
+                for (int p = maxP; p >= 2; p--) {
+                    String pc = matchPhraseAt(tokens, i, p, phraseToCode);
+                    if (pc != null) {
+                        bestLen = p;
+                        bestRaw = joinedWordRaw(tokens, i, p);
+                        bestCode = pc;
+                        break;
+                    }
+                }
+                if (bestLen == 0) {
+                    String wCode = wordToCode.get(t.text());
+                    if (wCode != null) {
+                        bestLen = 1;
+                        bestRaw = t.text();
+                        bestCode = wCode;
+                    }
+                }
+                if (bestLen > 0) {
+                    out.add(new SimToken(true, bestRaw, bestCode));
+                    if (appliedOut != null) {
+                        appliedOut.merge(bestRaw, 1, Integer::sum);
+                    }
+                    i += bestLen;
+                    continue;
+                }
+            }
+            out.add(new SimToken(false, t.text(), null));
+            i++;
+        }
+        return out.toArray(new SimToken[0]);
+    }
+
+    /** Counts occurrences of a candidate raw (space-joined word sequence) in the simulated stream. */
+    private static int countRawOccurrences(SimToken[] sim, String raw) {
+        String[] parts = raw.split(" ");
+        int cnt = 0;
+        int n = sim.length;
+        outer:
+        for (int s = 0; s < n; s++) {
+            for (int k = 0; k < parts.length; k++) {
+                int idx = s + k;
+                if (idx >= n) {
+                    break outer;
+                }
+                SimToken st = sim[idx];
+                // exact match on collapsed coded tokens and plain WORD atoms; separator /
+                // escape / emoji atoms can never be part of a word sequence
+                if (!st.raw().equals(parts[k])) {
+                    continue outer;
+                }
+            }
+            cnt++;
+        }
+        return cnt;
+    }
+
+    /** Raw string of the entry actually matched at position {@code i} with token length {@code len}. */
+    private static String matchedRaw(List<SaberTokenizer.Token> tokens, int i, int len,
+                                    Map<String, String> wordToCode, Map<String, String> phraseToCode) {
+        String one = tokens.get(i).text();
+        if (len == 1 && wordToCode.containsKey(one)) {
+            return one;
+        }
+        return joinedWordRaw(tokens, i, len);
+    }
+
+    /**
+     * Space-joined raw value of a candidate phrase starting at token {@code start}: only
+     * WORD atoms contribute their text, separator atoms inside the span are skipped. This
+     * makes phrase raws independent of how the tokenizer splits "word. word" into atoms.
+     */
+    private static String joinedWordRaw(List<SaberTokenizer.Token> tokens, int start, int count) {
+        StringBuilder sb = new StringBuilder();
+        for (int k = start; k < start + count; k++) {
+            SaberTokenizer.Token t = tokens.get(k);
+            if (t.type() != SaberTokenizer.TokenType.WORD) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(t.text());
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Token-level lookup of a registered phrase: checks whether the span [i, i+span)
+     * consists (modulo separator atoms) of exactly the words of some phrase key. Returns
+     * the code of the matching entry or null.
+     */
+    private static String matchPhraseAt(List<SaberTokenizer.Token> tokens, int i, int span,
+                                        Map<String, String> phraseToCode) {
+        if (phraseToCode.isEmpty()) {
+            return null;
+        }
+        int wordIdx = 0;
+        String firstWord = null;
+        for (int k = i; k < i + span; k++) {
+            SaberTokenizer.Token t = tokens.get(k);
+            if (t.type() != SaberTokenizer.TokenType.WORD) {
+                continue;
+            }
+            if (wordIdx == 0) {
+                firstWord = t.text();
+            }
+            wordIdx++;
+        }
+        if (wordIdx < 2 || firstWord == null) {
+            return null;
+        }
+        for (Map.Entry<String, String> e : phraseToCode.entrySet()) {
+            String[] words = e.getKey().split(" ");
+            if (words.length != wordIdx || !words[0].equals(firstWord)) {
+                continue;
+            }
+            int w = 0;
+            boolean ok = true;
+            for (int k = i; k < i + span && ok; k++) {
+                SaberTokenizer.Token t = tokens.get(k);
+                if (t.type() != SaberTokenizer.TokenType.WORD) {
+                    continue;
+                }
+                if (!t.text().equals(words[w])) {
+                    ok = false;
+                }
+                w++;
+            }
+            if (ok) {
+                return e.getValue();
             }
         }
-        return true;
+        return null;
     }
 
     /** Number of WORD tokens a space-joined phrase raw string consists of. */
@@ -442,29 +777,32 @@ public final class Compressor {
      */
     private int[] chooseReplacement(List<SaberTokenizer.Token> tokens, int i,
                                     Map<String, String> wordToCode,
-                                    Map<String, String> phraseToCode) {
+                                    Map<String, String> phraseToCode,
+                                    boolean ignoreGain) {
         int n = tokens.size();
         int bestLen = 0;
         long bestGain = 0;
         // Word candidate
         SaberTokenizer.Token t = tokens.get(i);
         if (t.type() == SaberTokenizer.TokenType.WORD && wordToCode.containsKey(t.text())) {
-            long gain = t.text().length() - 2L;
-            if (gain > bestGain) {
+            long gain = t.text().length() - 1L;
+            if (ignoreGain || gain > bestGain) {
                 bestGain = gain;
                 bestLen = 1;
             }
         }
-        // Phrase candidates: longest-first, first positive gain wins (longer => bigger gain)
+        // Phrase candidates: longest-first, first positive gain wins (longer => bigger gain).
+        // Match token-by-token (separators inside the span are tolerated), mirroring
+        // simulateCodes; the phrase raw is the space-joined word sequence.
         if (phraseMaxTokens > 0) {
             for (int p = Math.min(phraseMaxTokens, n - i); p >= settings.minPhraseLength(); p--) {
                 if (i + p > n) {
                     continue;
                 }
-                String raw = joinRaw(tokens, i, p);
-                if (phraseToCode.containsKey(raw)) {
-                    long gain = raw.length() - 2L;
-                    if (gain > bestGain) {
+                String pc = matchPhraseAt(tokens, i, p, phraseToCode);
+                if (pc != null) {
+                    long gain = joinedWordRaw(tokens, i, p).length() - 1L;
+                    if (ignoreGain || gain > bestGain) {
                         bestGain = gain;
                         bestLen = p;
                     }

@@ -26,6 +26,11 @@ public final class Dictionary {
         return new ArrayList<>(byCode.values());
     }
 
+    /** Removes the entry with the given code (used by the dead-code pruning pass). */
+    public void remove(String code) {
+        byCode.remove(code);
+    }
+
     public int size() {
         return byCode.size();
     }
