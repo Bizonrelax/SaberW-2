@@ -80,7 +80,24 @@ public final class Compressor {
 
         List<SaberTokenizer.Token> tokens = new ArrayList<>(SaberTokenizer.tokenize(shielded));
 
-        Map<String, Integer> wordFreq = countWords(tokens);
+        // Comment masking (Technical Specification 3.2.1): when ignoreComments is on, the
+        // shielded text keeps comment characters untouched (round-trip stays lossless) but
+        // every token overlapping a comment region is excluded from frequency counting and
+        // from code replacement. Token offsets are recovered by re-walking the shielded
+        // string: tokenize() emits clusters in strict left-to-right order without gaps.
+        List<CommentMasker.Range> commentRanges = settings.ignoreComments()
+                ? CommentMasker.findRanges(shielded) : List.of();
+        boolean[] maskedToken = new boolean[tokens.size()];
+        if (!commentRanges.isEmpty()) {
+            int off = 0;
+            for (int k = 0; k < tokens.size(); k++) {
+                String tx = tokens.get(k).text();
+                maskedToken[k] = CommentMasker.overlaps(commentRanges, off, off + tx.length());
+                off += tx.length();
+            }
+        }
+
+        Map<String, Integer> wordFreq = countWords(tokens, maskedToken);
         report(progress, "words", 20);
 
         // Candidates: WORD tokens with L >= minWordLength and S >= threshold (step-1 code, C=1).
@@ -100,7 +117,7 @@ public final class Compressor {
         }
 
         // Phrase pass (Technical Specification 3.2.3): suffix array + LCP over the token stream
-        List<Candidate> phraseCandidates = findPhrases(tokens);
+        List<Candidate> phraseCandidates = findPhrases(tokens, maskedToken);
         report(progress, "phrases", 45);
 
         // Unified candidate pool (Technical Specification 3.2.4): single WORD entries and
@@ -341,12 +358,15 @@ public final class Compressor {
         // Final bookkeeping: frequencies recorded during greedy registration may be stale
         // after the prune pass; recompute them once against the surviving registrations.
         if (!appliedOrder.isEmpty()) {
-            SimToken[] sim = simulateCodes(tokens, wordToCode, phraseToCode, this.phraseMaxTokens);
+            // Recompute frequencies once against the surviving registrations. The prune pass
+            // above may have removed entries from wordToCode/phraseToCode, so the `sim`
+            // stream produced before replacement is stale here - rebuild it.
+            SimToken[] finalSim = simulateCodes(tokens, wordToCode, phraseToCode, this.phraseMaxTokens);
             for (DictEntry en : dictionary.entries()) {
                 if (baselineOnly.contains(en.value().tokens().get(0).text())) {
                     continue; // baseline entries keep their accumulated session frequency
                 }
-                int f = countRawOccurrences(sim, en.value().tokens().get(0).text());
+                int f = countRawOccurrences(finalSim, en.value().tokens().get(0).text());
                 if (f != en.frequency()) {
                     dictionary.put(new DictEntry(en.code(), en.value(), en.level(), f,
                             en.codeAppliedCount(), en.addedAt(), en.sentToBot()));
@@ -427,6 +447,10 @@ public final class Compressor {
      * Returns candidates that satisfy the savings formula for step-1 codes.
      */
     List<Candidate> findPhrases(List<SaberTokenizer.Token> tokens) {
+        return findPhrases(tokens, new boolean[tokens.size()]);
+    }
+
+    List<Candidate> findPhrases(List<SaberTokenizer.Token> tokens, boolean[] maskedToken) {
         if (settings.minPhraseLength() < 2) {
             return List.of(); // phrase pass disabled by settings
         }
