@@ -121,13 +121,21 @@ public final class Compressor {
             remaining.put(e.getKey(), new Candidate(e.getKey(), fr[0], fr[1], 1));
         }
         // Maximal-phrase filter at the TOKEN level: a phrase is dropped only if some longer
-        // candidate matches it token-by-token as a contiguous slice. A mere string prefix is
-        // NOT enough: separators between tokens (e.g. ". ") make the raw strings look like
-        // prefixes while the extra token never actually matches.
+        // candidate matches it token-by-token as a contiguous slice AND that longer candidate
+        // is itself applicable (all its words are separator-adjacent in the text). A mere
+        // string prefix is NOT enough; and a superstring whose extra word sits behind a
+        // structural boundary (e.g. "тексте\nфинал") can never be applied, so keeping it as
+        // the maximal representative would kill every working subphrase of the run.
         List<Candidate> sortedByTokensDesc = new ArrayList<>(phraseCandidates);
         sortedByTokensDesc.sort(Comparator.comparingInt(Candidate::tokenCount).reversed());
-        List<Candidate> maximalPhrases = new ArrayList<>();
+        List<Candidate> applicablePhrases = new ArrayList<>();
         for (Candidate c : sortedByTokensDesc) {
+            if (isApplicablePhrase(tokens, c.raw())) {
+                applicablePhrases.add(c);
+            }
+        }
+        List<Candidate> maximalPhrases = new ArrayList<>();
+        for (Candidate c : applicablePhrases) {
             String[] parts = c.raw().split(" ");
             boolean covered = false;
             for (Candidate longer : maximalPhrases) {
@@ -180,8 +188,11 @@ public final class Compressor {
         this.phraseMaxTokens = maxPhraseTokens;
 
         // ---- Greedy registration loop (Technical Specification 3.2.4) ----
-        List<Candidate> appliedOrder = new ArrayList<>();
-        while (!remaining.isEmpty()) {
+        // Safety bound: one registration per iteration can never exceed the initial pool
+        // size; guards against any pathological re-adding loop livelocking the JVM.
+        int registrationBudget = remaining.size() + 1;
+        List<String> registeredOrder = new ArrayList<>();
+        while (!remaining.isEmpty() && registrationBudget-- > 0) {
             if (progress != null && progress.isCancelled()) {
                 break; // keep the dictionary built so far; the replace pass will abort below
             }
@@ -231,7 +242,7 @@ public final class Compressor {
                     0,
                     Instant.now().toString(),
                     false));
-            appliedOrder.add(winner);
+            registeredOrder.add(winner.raw());
             remaining.remove(winner.raw());
         }
         report(progress, "register", 60);
@@ -298,21 +309,24 @@ public final class Compressor {
         // final left-to-right pass is a "dead code" - remove it from the dictionary.
         // Baseline (session) entries are NEVER removed even if unused in this text.
         Set<String> prunedValues = new HashSet<>();
-        for (Candidate c : appliedOrder) {
-            if (!appliedCount.containsKey(c.raw()) && !baselineOnly.contains(c.raw())) {
-                String code = c.tokenCount() == 1 ? wordToCode.remove(c.raw())
-                                                  : phraseToCode.remove(c.raw());
+        for (String raw : registeredOrder) {
+            if (!appliedCount.containsKey(raw) && !baselineOnly.contains(raw)) {
+                String code = wordToCode.remove(raw);
+                if (code == null) {
+                    code = phraseToCode.remove(raw);
+                }
                 if (code != null) {
                     dictionary.remove(code);
                 }
-                prunedValues.add(c.raw());
+                prunedValues.add(raw);
             }
         }
         if (!prunedValues.isEmpty()) {
             // A surviving registration whose occurrences were only visible through a now
             // removed neighbour may have lost frequency; recompute and drop dead ones too.
             Deque<String> queue = new ArrayDeque<>(prunedValues);
-            while (!queue.isEmpty()) {
+            int cascadeBudget = registeredOrder.size() + 1; // each value can be removed once
+            while (!queue.isEmpty() && cascadeBudget-- > 0) {
                 queue.poll();
                 int window = this.phraseMaxTokens;
                 for (String v : phraseToCode.keySet()) {
@@ -580,6 +594,42 @@ public final class Compressor {
                 }
             }
             return true;
+        }
+        return false;
+    }
+
+    /**
+     * True when the space-joined phrase raw actually occurs in the token stream as a run of
+     * consecutive WORD atoms separated only by SEPARATOR atoms (no NEWLINE/structural atoms
+     * inside). A non-applicable phrase could never be used by the replacement pass, so it
+     * must neither enter the pool nor "cover" (kill) its applicable subphrases.
+     */
+    private static boolean isApplicablePhrase(List<SaberTokenizer.Token> tokens, String raw) {
+        String[] words = raw.split(" ");
+        int n = tokens.size();
+        outer:
+        for (int i = 0; i < n; i++) {
+            if (tokens.get(i).type() != SaberTokenizer.TokenType.WORD
+                    || !tokens.get(i).text().equals(words[0])) {
+                continue;
+            }
+            int w = 1;
+            int k = i + 1;
+            while (k < n && w < words.length) {
+                SaberTokenizer.Token t = tokens.get(k);
+                if (t.type() == SaberTokenizer.TokenType.SEPARATOR) {
+                    k++;
+                    continue;
+                }
+                if (t.type() != SaberTokenizer.TokenType.WORD || !t.text().equals(words[w])) {
+                    continue outer;
+                }
+                w++;
+                k++;
+            }
+            if (w == words.length) {
+                return true;
+            }
         }
         return false;
     }
