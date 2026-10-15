@@ -80,6 +80,13 @@ public final class Compressor {
 
         List<SaberTokenizer.Token> tokens = new ArrayList<>(SaberTokenizer.tokenize(shielded));
 
+        // Comment masking (Technical Specification 3.2.1, 12.4): tokens inside comment ranges
+        // are excluded from word/phrase frequencies, code simulation and replacement, so that
+        // registered codes never overlap a comment and round-trip stays lossless.
+        List<int[]> commentRanges = findCommentRanges(tokens);
+        boolean[] mask = buildMask(commentRanges, tokens.size());
+        this.maskedToken = commentRanges.isEmpty() ? null : mask;
+
         Map<String, Integer> wordFreq = countWords(tokens);
         report(progress, "words", 20);
 
@@ -271,7 +278,8 @@ public final class Compressor {
             if (progress != null && progress.isCancelled()) {
                 throw new CompressionInterruptedException(partialResult(out, tokens, i, dictionary));
             }
-            int[] decision = chooseReplacement(tokens, i, wordToCode, phraseToCode, false);
+            int[] decision = (maskedToken != null && maskedToken[i])
+                    ? null : chooseReplacement(tokens, i, wordToCode, phraseToCode, false);
             if (decision != null) {
                 int len = decision[0];
                 String raw = len == 1 ? tokens.get(i).text() : joinedWordRaw(tokens, i, len);
@@ -341,7 +349,7 @@ public final class Compressor {
         // Final bookkeeping: frequencies recorded during greedy registration may be stale
         // after the prune pass; recompute them once against the surviving registrations.
         if (!appliedOrder.isEmpty()) {
-            SimToken[] sim = simulateCodes(tokens, wordToCode, phraseToCode, this.phraseMaxTokens);
+            sim = simulateCodes(tokens, wordToCode, phraseToCode, this.phraseMaxTokens);
             for (DictEntry en : dictionary.entries()) {
                 if (baselineOnly.contains(en.value().tokens().get(0).text())) {
                     continue; // baseline entries keep their accumulated session frequency
@@ -445,7 +453,11 @@ public final class Compressor {
         List<Integer> seq = new ArrayList<>();
         for (int i = 0; i < tokens.size(); i++) {
             SaberTokenizer.Token t = tokens.get(i);
-            if (t.type() != SaberTokenizer.TokenType.WORD) {
+            if (t.type() != SaberTokenizer.TokenType.WORD
+                    || (maskedToken != null && maskedToken[i])) {
+                flushWordRun(seq, wordPos, tokens, found);
+                seq.clear();
+                wordPos.clear();
                 continue;
             }
             int prevIdx = wordPos.isEmpty() ? -1 : wordPos.get(wordPos.size() - 1);
@@ -683,6 +695,7 @@ public final class Compressor {
         while (i < n) {
             SaberTokenizer.Token t = tokens.get(i);
             if (t.type() == SaberTokenizer.TokenType.WORD) {
+                boolean skipWord = maskedToken != null && i < maskedToken.length && maskedToken[i];
                 int bestLen = 0;
                 String bestRaw = null;
                 String bestCode = null;
@@ -692,7 +705,7 @@ public final class Compressor {
                 // raw string of such a slice still contains no separator chars, so we compare
                 // token-by-token instead of joining raws and doing an exact map lookup.
                 int maxP = Math.min(maxTokens, n - i);
-                for (int p = maxP; p >= 2; p--) {
+                for (int p = maxP; p >= 2 && !skipWord; p--) {
                     String pc = matchPhraseAt(tokens, i, p, phraseToCode);
                     if (pc != null) {
                         bestLen = p;
@@ -701,7 +714,7 @@ public final class Compressor {
                         break;
                     }
                 }
-                if (bestLen == 0) {
+                if (bestLen == 0 && !skipWord) {
                     String wCode = wordToCode.get(t.text());
                     if (wCode != null) {
                         bestLen = 1;
@@ -889,10 +902,69 @@ public final class Compressor {
 
     private int phraseMaxTokens = 0;
 
+    private boolean[] maskedToken;
+
+    /**
+     * Locates comment ranges in the token stream (Technical Specification 3.2.1, 12.4):
+     * a "//" marker opens a line comment that runs to the end of the line; a "/* ... *&#47;"
+     * pair delimits a block comment. Each range is {@code [startInclusive, endExclusive)}
+     * in token indices and covers every atom of the comment, markers included. The marker
+     * itself may share an atom with adjacent characters (e.g. the separator atom "// ").
+     */
+    private static List<int[]> findCommentRanges(List<SaberTokenizer.Token> tokens) {
+        List<int[]> ranges = new ArrayList<>();
+        int n = tokens.size();
+        int i = 0;
+        while (i < n) {
+            String text = tokens.get(i).text();
+            if (text.contains("//")) {
+                int start = i;
+                while (i < n && !containsNewline(tokens.get(i).text())) {
+                    i++;
+                }
+                if (i < n) {
+                    i++; // include the newline atom itself
+                }
+                ranges.add(new int[]{start, i});
+            } else if (text.contains("/*")) {
+                int start = i;
+                while (i < n && !endsWith(tokens.get(i).text(), "*/")) {
+                    i++;
+                }
+                i = Math.min(n, i + 1); // include the closing delimiter atom
+                ranges.add(new int[]{start, i});
+            } else {
+                i++;
+            }
+        }
+        return ranges;
+    }
+
+    private static boolean endsWith(String s, String suffix) {
+        return s.endsWith(suffix);
+    }
+
+    private static boolean containsNewline(String s) {
+        return s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0;
+    }
+
+    /** Builds a per-token mask: true for every token index inside one of {@code ranges}. */
+    private static boolean[] buildMask(List<int[]> ranges, int size) {
+        boolean[] mask = new boolean[size];
+        for (int[] r : ranges) {
+            for (int k = r[0]; k < r[1] && k < size; k++) {
+                mask[k] = true;
+            }
+        }
+        return mask;
+    }
+
     private Map<String, Integer> countWords(List<SaberTokenizer.Token> tokens) {
         Map<String, Integer> freq = new HashMap<>();
-        for (SaberTokenizer.Token t : tokens) {
-            if (t.type() == SaberTokenizer.TokenType.WORD) {
+        for (int i = 0; i < tokens.size(); i++) {
+            SaberTokenizer.Token t = tokens.get(i);
+            if (t.type() == SaberTokenizer.TokenType.WORD
+                    && (maskedToken == null || !maskedToken[i])) {
                 freq.merge(t.text(), 1, Integer::sum);
             }
         }
