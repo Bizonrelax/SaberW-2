@@ -22,9 +22,10 @@ Attribution is provided here to comply with their licenses:
    License text: licenses/EPL-2.0.txt
 
 3. Launch4j Maven plugin (com.akathist.maven.plugins.launch4j:launch4j-maven-plugin),
-   planned version 2.5.0 — build-time only (profile "exe"), NOT part of the runtime artifact.
+   version 2.6.0 — build-time only (bound to the "package" phase), NOT part of the runtime artifact.
    Authors: Karsten Wong, Dave Trauder; maintained by akathist community
    Project: http://launch4j.sourceforge.net/
+   Repository: https://github.com/orphan-oss/launch4j-maven-plugin
    License: BSD-style (launch4j license)
    To be added to licenses/ upon first use (per Technical Specification section 21).
 
