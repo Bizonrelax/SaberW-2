@@ -1,11 +1,43 @@
 # SaberW-2
 
-Можно сжимать текст в чат ботам для отправки огромных сообщений и классов с исходным кодом. Экономия токенов.
+[![Build Status](https://github.com/Bizonrelax/SaberW-2/actions/workflows/maven.yml/badge.svg)](https://github.com/Bizonrelax/SaberW-2/actions/workflows/maven.yml)
+[![Release](https://img.shields.io/github/v/release/Bizonrelax/SaberW-2?include_prereleases&style=flat-square)](https://github.com/Bizonrelax/SaberW-2/releases)
+[![License: Unlicense](https://img.shields.io/badge/License-Unlicense-blue.svg?style=flat-square)](https://opensource.org/license/unlicense)
+[![Java 21](https://img.shields.io/badge/Java-21-orange.svg?style=flat-square)](https://openjdk.org/projects/jdk/21/)
 
-## Third-party licenses
+> **Двустороннее интеллектуальное сжатие текста и исходного кода для экономии токенов в LLM-чатах.**
 
-- **Jackson** (`com.fasterxml.jackson.core:jackson-databind`, version 2.17.2) — Apache License 2.0 — project: https://github.com/FasterXML/jackson-databind
-- **JUnit 5** (`org.junit.jupiter:junit-jupiter`) — Eclipse Public License 2.0 — test-scope only, not shipped in the artifact
-- **Launch4j** (launch4j-maven-plugin, build-time only) — BSD-style license
+## 💡 О проекте
 
-See the [NOTICE](NOTICE) file and the `licenses/` directory for full attribution and license texts.
+**SaberW-2** — это десктопное приложение и библиотека для сжатия текста. Главная цель — преодоление лимитов контекста в LLM (Large Language Models) и значительная экономия токенов при отправке объемных сообщений, длинных логов или целых классов с исходным кодом.
+
+В отличие от обычных архиваторов (ZIP/GZIP), которые превращают текст в нечитаемый бинарный мусор, SaberW-2 использует **словарный метод сжатия**. Он находит повторяющиеся слова и целые фразы, заменяя их на компактные Unicode-символы из диапазона CJK Extension A. Сжатый текст остается валидной строкой, которую можно скопировать в чат с нейросетью, а на стороне получателя (или в следующем сообщении) — мгновенно распаковать обратно без потери ни единого символа.
+
+## 🚀 Ключевые возможности
+
+*   **Lossless Round-Trip (Без потерь)**: Строгая математическая инвариантность `decompress(compress(text)) == text`. Программа сохраняет все пробелы, переносы строк, двойные отступы и пунктуацию внутри фраз (exact-span semantics).
+*   **Умный анализ фраз**: Алгоритм на основе суффиксных массивов и LCP (Longest Common Prefix) автоматически находит длинные повторяющиеся конструкции, бойлерплейт и целые куски кода.
+*   **Защита исходного кода**: Встроенный анализатор комментариев (`//`, `/* ... */`). Код внутри комментариев не сжимается, что предотвращает поломку синтаксиса и ложные срабатывания.
+*   **Поддержка Emoji и Unicode**: Специальный механизм "экранирования" (Shielding) защищает редкие символы, эмодзи и флаги от коллизий с кодами сжатия.
+*   **Непрерывные сессии (Session Continuation)**: Словарь можно сохранить в JSON и переиспользовать в следующих сообщениях. Бот или собеседник, получив словарь один раз, будет понимать все последующие сжатые сообщения, экономя еще больше токенов.
+*   **GUI и CLI**: Удобный графический интерфейс (JavaFX/Swing) для повседневного использования и консольная версия для автоматизации и пайплайнов.
+
+## ⚙️ Как это работает
+
+1.  **Токенизация и Экранизация**: Текст разбивается на атомы (слова, сепараторы, эмодзи). Редкие символы (CJK Ext A) временно заменяются на атомарные эскейп-последовательности (`§#...`), чтобы освободить место под коды.
+2.  **Поиск паттернов**: Частотный анализ слов и суффиксный массив для фраз с учетом "точных диапазонов" (разделители между словами сохраняются).
+3.  **Жадная регистрация (Greedy Loop)**: Самые "выгодные" слова и фразы (рассчитанные по формуле экономии) получают уникальные односимвольные коды.
+4.  **Замена**: Текст заменяется на коды.
+5.  **Распаковка**: Строгий left-to-right парсер восстанавливает оригинал, рекурсивно раскрывая коды с ограничением глубины стека.
+
+## 🛠 Сборка и запуск
+
+Для сборки потребуется **Java 21+** и **Apache Maven 3.9+**.
+
+```bash
+# Клонировать репозиторий
+git clone https://github.com/Bizonrelax/SaberW-2.git
+cd SaberW-2
+
+# Собрать исполняемый JAR и EXE (для Windows через Launch4j)
+mvn clean package
