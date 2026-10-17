@@ -94,7 +94,7 @@ public final class Compressor {
         // Comment masking (Technical Specification 3.2.1, 12.4): tokens inside comment ranges
         // are excluded from word/phrase frequencies, code simulation and replacement, so that
         // registered codes never overlap a comment and round-trip stays lossless.
-        List<int[]> commentRanges = findCommentRanges(tokens);
+        List<int[]> commentRanges = settings.ignoreComments() ? findCommentRanges(tokens) : List.of();
         boolean[] mask = buildMask(commentRanges, tokens.size());
         this.maskedToken = commentRanges.isEmpty() ? null : mask;
 
@@ -908,40 +908,73 @@ public final class Compressor {
 
     private boolean[] maskedToken;
 
-    /**
-     * Locates comment ranges in the token stream (Technical Specification 3.2.1, 12.4):
-     * a "//" marker opens a line comment that runs to the end of the line; a "/* ... *&#47;"
-     * pair delimits a block comment. Each range is {@code [startInclusive, endExclusive)}
-     * in token indices and covers every atom of the comment, markers included. The marker
-     * itself may share an atom with adjacent characters (e.g. the separator atom "// ").
-     */
+    private static final String[] PREPROCESSOR_KEYWORDS = {
+            "include", "define", "undef", "if", "ifdef", "ifndef",
+            "elif", "else", "endif", "line", "error", "pragma"};
+
     private static List<int[]> findCommentRanges(List<SaberTokenizer.Token> tokens) {
         List<int[]> ranges = new ArrayList<>();
         int n = tokens.size();
         int i = 0;
         while (i < n) {
             String text = tokens.get(i).text();
-            if (text.contains("//")) {
-                int start = i;
-                while (i < n && !containsNewline(tokens.get(i).text())) {
-                    i++;
-                }
-                if (i < n) {
-                    i++; // include the newline atom itself
-                }
-                ranges.add(new int[]{start, i});
-            } else if (text.contains("/*")) {
-                int start = i;
-                while (i < n && !endsWith(tokens.get(i).text(), "*/")) {
-                    i++;
-                }
-                i = Math.min(n, i + 1); // include the closing delimiter atom
-                ranges.add(new int[]{start, i});
+            int html = text.indexOf("<!--");
+            int block = text.indexOf("/*");
+            int line = indexOfLineMarker(text);
+            int hash = indexOfHashMarker(text, tokens, i);
+            int best = -1;
+            char kind = 0;
+            if (html >= 0) { best = html; kind = 'h'; }
+            if (block >= 0 && (best < 0 || block < best)) { best = block; kind = 'b'; }
+            if (line >= 0 && (best < 0 || line < best)) { best = line; kind = 'l'; }
+            if (hash >= 0 && (best < 0 || hash < best)) { best = hash; kind = 'x'; }
+            if (kind == 0) { i++; continue; }
+            int start = i;
+            if (kind == 'l' || kind == 'x') {
+                while (i < n && !containsNewline(tokens.get(i).text())) i++;
+                if (i < n) i++;
+            } else if (kind == 'b') {
+                while (i < n && !endsWith(tokens.get(i).text(), "*/")) i++;
+                i = Math.min(n, i + 1);
             } else {
-                i++;
+                while (i < n && !tokens.get(i).text().contains("-->")) i++;
+                i = Math.min(n, i + 1);
             }
+            ranges.add(new int[]{start, i});
         }
         return ranges;
+    }
+
+    /** Две косые черты: НЕ открывают комментарий, если непосредственно перед ними двоеточие (защита URL, ТЗ 12.2). */
+    private static int indexOfLineMarker(String atom) {
+        int from = 0;
+        while (true) {
+            int idx = atom.indexOf("//", from);
+            if (idx < 0) return -1;
+            if (idx == 0 || atom.charAt(idx - 1) != ':') return idx;
+            from = idx + 1;
+        }
+    }
+
+    /** Решётка: НЕ открывает комментарий, если стоит первым непробельным символом строки и за ней идёт ключевое слово C-препроцессора (директива, ТЗ 12.2). */
+    private static int indexOfHashMarker(String atom, List<SaberTokenizer.Token> tokens, int i) {
+        int idx = atom.indexOf('#');
+        if (idx < 0) return -1;
+        int nl = atom.lastIndexOf('\n', idx);
+        boolean atLineStart;
+        if (nl >= 0) {
+            atLineStart = atom.substring(nl + 1, idx).isBlank();
+        } else {
+            atLineStart = atom.substring(0, idx).isBlank()
+                    && (i == 0 || containsNewline(tokens.get(i - 1).text()));
+        }
+        if (atLineStart) {
+            String rest = atom.substring(idx + 1).trim();
+            for (String kw : PREPROCESSOR_KEYWORDS) {
+                if (rest.startsWith(kw)) return -1;
+            }
+        }
+        return idx;
     }
 
     private static boolean endsWith(String s, String suffix) {

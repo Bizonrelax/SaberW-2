@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.saberw.core.PhraseCompressionTest
+-------------------------------------------------------------------------------
+Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 207.0 s -- in com.saberw.core.PhraseCompressionTest

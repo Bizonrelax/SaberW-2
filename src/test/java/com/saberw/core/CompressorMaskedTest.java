@@ -2,7 +2,7 @@ package com.saberw.core;
 
 import com.saberw.model.DictEntry;
 import com.saberw.model.Dictionary;
-import org.junit.jupiter.api.Disabled;
+
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -17,6 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CompressorMaskedTest {
 
     private static final CompressionSettings SETTINGS = CompressionSettings.maxCjk();
+    /** Masking is active only when the ignoreComments option is turned on (TZ 3.2.1). */
+    private static final CompressionSettings MASK_ON = CompressionSettings.maxCjk().withIgnoreComments(true);
 
     private static boolean hasValue(Dictionary d, String raw) {
         for (DictEntry e : d.entries()) {
@@ -29,14 +31,14 @@ class CompressorMaskedTest {
 
     @Test
     void lineCommentWordsAreExcludedFromFrequencies() {
-        Compressor.Result r = new Compressor(SETTINGS).compress("alpha alpha // beta beta beta");
+        Compressor.Result r = new Compressor(MASK_ON).compress("alpha alpha // beta beta beta");
         assertTrue(hasValue(r.dictionary(), "alpha"));
         assertFalse(hasValue(r.dictionary(), "beta"));
     }
 
     @Test
     void blockCommentWordsAreExcludedFromFrequencies() {
-        Compressor.Result r = new Compressor(SETTINGS)
+        Compressor.Result r = new Compressor(MASK_ON)
                 .compress("gamma gamma gamma /* delta delta delta */ gamma");
         assertTrue(hasValue(r.dictionary(), "gamma"));
         assertFalse(hasValue(r.dictionary(), "delta"));
@@ -50,22 +52,23 @@ class CompressorMaskedTest {
     }
 
     @Test
-    @Disabled("Отклонение от ТЗ 12.2: '://' не должен начинать комментарий. Включить после защиты URL.")
     void urlIsNotCommentPerSpec() {
         Compressor.Result r = new Compressor(SETTINGS).compress("http://zoom zoom zoom zoom");
         assertTrue(hasValue(r.dictionary(), "zoom"));
     }
 
     @Test
-    @Disabled("Отклонение от ТЗ 12.2: нет флага ignoreComments (маска всегда включена). Включить после добав флага.")
     void maskingCanBeTurnedOffPerSpec() {
-        // Будущее: CompressionSettings с ignoreComments=false должна считать слова в комментариях.
+        String text = "alpha alpha // beta beta beta";
+        Compressor.Result off = new Compressor(SETTINGS.withIgnoreComments(false)).compress(text);
+        assertTrue(hasValue(off.dictionary(), "beta"), "with ignoreComments=false comment words must be counted");
+        Compressor.Result on = new Compressor(SETTINGS.withIgnoreComments(true)).compress(text);
+        assertFalse(hasValue(on.dictionary(), "beta"));
     }
 
     @Test
-    @Disabled("Отклонение от ТЗ 12.2: правила HTML и Python не реализованы. Включить после реализации.")
     void htmlCommentsMaskedPerSpec() {
-        Compressor.Result r = new Compressor(SETTINGS).compress("<!-- omega omega omega -->");
+        Compressor.Result r = new Compressor(MASK_ON).compress("<!-- omega omega omega -->");
         assertFalse(hasValue(r.dictionary(), "omega"));
     }
 }
