@@ -34,10 +34,49 @@
 
 Для сборки потребуется **Java 21+** и **Apache Maven 3.9+**.
 
-```bash
 # Клонировать репозиторий
 git clone https://github.com/Bizonrelax/SaberW-2.git
 cd SaberW-2
 
 # Собрать исполняемый JAR и EXE (для Windows через Launch4j)
 mvn clean package
+
+
+После успешной сборки в папке target/ появятся:
+SaberW-2-0.1.0-SNAPSHOT.jar — кроссплатформенный JAR-файл.
+SaberW-2.exe — нативный Windows-лаунчер (не требует установленной Java на ПК конечного пользователя, если настроить bundled JRE).
+Запуск GUI:
+
+java -jar target/SaberW-2-0.1.0-SNAPSHOT.jar
+
+
+🧪 Тестирование
+Проект покрыт строгими JUnit 5 тестами. Тесты проверяют не только базовую работу, но и edge-cases: смешанные тексты (Русский/Английский/Код/Эмодзи), эскейп-последовательности, инвариантность round-trip и корректность маскирования комментариев.
+
+mvn test
+
+
+📦 CI/CD и Релизы
+Проект использует GitHub Actions для автоматической сборки и доставки. При каждом пуше в ветку main:
+Запускается полный цикл тестов (mvn test).
+Собирается portable-версия (ZIP с JAR и скриптами запуска).
+Создается новый GitHub Release с прикрепленными артефактами (.jar, .exe, .zip).
+Вы всегда можете скачать свежую версию в разделе Releases.
+📄 Лицензия и Third-party
+Проект распространяется под лицензией Unlicense (Public Domain). Делайте с кодом всё, что хотите.
+Third-party licenses
+Jackson (com.fasterxml.jackson.core:jackson-databind, version 2.17.2) — Apache License 2.0 — project: https://github.com/FasterXML/jackson-databind
+JUnit 5 (org.junit.jupiter:junit-jupiter) — Eclipse Public License 2.0 — test-scope only, not shipped in the artifact
+Launch4j (launch4j-maven-plugin, build-time only) — BSD-style license
+See the NOTICE file and the licenses/ directory for full attribution and license texts.
+
+
+
+***
+
+### Что изменилось и почему это важно:
+1. **Добавлены бейджи** — они визуально делают репозиторий живым и профессиональным.
+2. **Появился блок "О проекте" и "Как это работает"** — теперь любой разработчик, зашедший на страницу, за 10 секунд поймет, какую боль решает инструмент (экономия токенов, обход лимитов LLM) и как он устроен под капотом.
+3. **Упомянуты фишки архитектуры** (Exact-span semantics, Shielding, Comment masking) — это показывает глубину проработки кода.
+4. **Инструкции по сборке и CI/CD** — теперь понятно, как запустить проект локально и откуда брать готовые `.exe` файлы (из раздела Releases, который кодер только что починил).
+
