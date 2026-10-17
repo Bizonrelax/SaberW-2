@@ -1,2 +1,13 @@
+target/
+.vscode/
+.idea/
+*.swp
+*.swo
+*.log
+build/
+libs/
+*.tmp
+.DS_Store
+Thumbs.db
 .env
 env.sh
