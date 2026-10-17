@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.saberw.model.DictEntry;
 import com.saberw.model.Dictionary;
+import com.saberw.model.DictionaryMetadata;
 import com.saberw.model.EntryValue;
 
 import java.io.IOException;
@@ -28,7 +29,7 @@ public final class DictionaryJsonSerializer {
     private final ObjectMapper mapper = new ObjectMapper();
 
     public record Root(String id, Instant createdAt, Dictionary dictionary,
-                       CompressionSettings settings) {
+                       CompressionSettings settings, DictionaryMetadata metadata) {
 
         /** Legacy constructor without settings: uses the default (max-cjk) settings. */
         public Root(String id, Instant createdAt, Dictionary dictionary) {
@@ -38,6 +39,11 @@ public final class DictionaryJsonSerializer {
         /** Convenience constructor keeping only the case-normalization flag. */
         public Root(String id, Instant createdAt, Dictionary dictionary, boolean normalizeCase) {
             this(id, createdAt, dictionary, withNormalizeCase(CompressionSettings.maxCjk(), normalizeCase));
+        }
+
+        /** Secondary constructor without metadata: stub counters, recomputed from the dictionary. */
+        public Root(String id, Instant createdAt, Dictionary dictionary, CompressionSettings settings) {
+            this(id, createdAt, dictionary, settings, new DictionaryMetadata().recompute(dictionary));
         }
     }
 
@@ -50,6 +56,22 @@ public final class DictionaryJsonSerializer {
     private static final String SETTINGS_NODE = "settings";
 
     public String toJson(Root root) throws IOException {
+        // TZ 6.10: serialize the root with metadata.sizeBytes = 0, measure the UTF-8
+        // byte length of the result, then write that value into sizeBytes (no recursion).
+        DictionaryMetadata measured = root.metadata().recompute(root.dictionary());
+        measured.setSizeBytes(0);
+        String zeroSized = writeRoot(buildNode(root, measured));
+        long size = zeroSized.getBytes(StandardCharsets.UTF_8).length;
+        DictionaryMetadata finalMeta = new DictionaryMetadata(measured);
+        finalMeta.setSizeBytes(size);
+        return writeRoot(buildNode(root, finalMeta));
+    }
+
+    private String writeRoot(ObjectNode node) throws IOException {
+        return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node);
+    }
+
+    private ObjectNode buildNode(Root root, DictionaryMetadata metadata) {
         ObjectNode node = mapper.createObjectNode();
         node.put("format", FORMAT);
         node.put("formatVersion", FORMAT_VERSION);
@@ -89,20 +111,26 @@ public final class DictionaryJsonSerializer {
         }
 
         ObjectNode meta = node.putObject("metadata");
-        meta.put("note", "");
-        meta.putArray("chatLinks");
-        meta.putArray("appliedDates");
-        meta.put("totalCompressions", 0);
-        meta.put("totalDecompressions", 0);
-        meta.put("supplementCount", 0);
-        meta.put("mergeCount", 0);
-        meta.put("exportCount", 0);
-        meta.put("lastExportIncludedMetadata", false);
-        meta.put("sizeBytes", 0);
-        meta.put("entriesCount", root.dictionary().size());
-        meta.put("totalValueChars", totalValueChars(root.dictionary()));
+        meta.put("note", metadata.note());
+        ArrayNode chatLinks = meta.putArray("chatLinks");
+        for (String link : metadata.chatLinks()) {
+            chatLinks.add(link);
+        }
+        ArrayNode appliedDates = meta.putArray("appliedDates");
+        for (String date : metadata.appliedDates()) {
+            appliedDates.add(date);
+        }
+        meta.put("totalCompressions", metadata.totalCompressions());
+        meta.put("totalDecompressions", metadata.totalDecompressions());
+        meta.put("supplementCount", metadata.supplementCount());
+        meta.put("mergeCount", metadata.mergeCount());
+        meta.put("exportCount", metadata.exportCount());
+        meta.put("lastExportIncludedMetadata", metadata.lastExportIncludedMetadata());
+        meta.put("sizeBytes", metadata.sizeBytes());
+        meta.put("entriesCount", metadata.entriesCount());
+        meta.put("totalValueChars", metadata.totalValueChars());
 
-        return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node);
+        return node;
     }
 
     public Root fromJson(String json) throws IOException {
@@ -142,7 +170,38 @@ public final class DictionaryJsonSerializer {
                     en.path("addedAt").asText(""),
                     en.path("sentToBot").asBoolean(false)));
         }
-        return new Root(id, createdAt, dictionary, settings);
+
+        DictionaryMetadata metadata;
+        JsonNode mn = node.path("metadata");
+        if (mn.isObject()) {
+            metadata = new DictionaryMetadata(
+                    mn.path("note").asText(""),
+                    readStringList(mn.path("chatLinks")),
+                    readStringList(mn.path("appliedDates")));
+            metadata.setTotalCompressions(mn.path("totalCompressions").asInt(0));
+            metadata.setTotalDecompressions(mn.path("totalDecompressions").asInt(0));
+            metadata.setSupplementCount(mn.path("supplementCount").asInt(0));
+            metadata.setMergeCount(mn.path("mergeCount").asInt(0));
+            metadata.setExportCount(mn.path("exportCount").asInt(0));
+            metadata.setLastExportIncludedMetadata(mn.path("lastExportIncludedMetadata").asBoolean(false));
+            metadata.setSizeBytes(mn.path("sizeBytes").asLong(0));
+            metadata.setEntriesCount(mn.path("entriesCount").asInt(dictionary.size()));
+            metadata.setTotalValueChars(mn.path("totalValueChars").asInt(totalValueChars(dictionary)));
+            // counters and lists are authoritative; entry-derived fields stay in sync with the dict
+            metadata = metadata.recompute(dictionary);
+        } else {
+            // absent metadata block: stub + recompute
+            metadata = new DictionaryMetadata().recompute(dictionary);
+        }
+        return new Root(id, createdAt, dictionary, settings, metadata);
+    }
+
+    private static List<String> readStringList(JsonNode arr) {
+        List<String> out = new ArrayList<>();
+        for (JsonNode item : arr) {
+            out.add(item.asText());
+        }
+        return out;
     }
 
     public void save(Path file, Root root) throws IOException {

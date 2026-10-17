@@ -10,6 +10,7 @@ import com.saberw.core.DictionaryJsonSerializer;
 import com.saberw.core.DictionaryStore;
 import com.saberw.model.DictEntry;
 import com.saberw.model.Dictionary;
+import com.saberw.model.DictionaryMetadata;
 
 import javax.swing.*;
 import java.awt.BorderLayout;
@@ -47,6 +48,7 @@ public final class MainWindow extends JFrame {
 
     private Dictionary dictionary = new Dictionary();
     private String dictionaryId = null;
+    private DictionaryMetadata metadata = new DictionaryMetadata();
     private final DictionaryStore store = DictionaryStore.inWorkingDirectory();
     private CompressionSettings settings = CompressionSettings.maxCjk();
 
@@ -97,6 +99,7 @@ public final class MainWindow extends JFrame {
             Decompressor decompressor = new Decompressor(dictionary);
             try {
                 outputArea.setText(decompressor.decompress(inputArea.getText()));
+                metadata = metadata.withDecompression();
             } catch (Decompressor.DecompressionException ex) {
                 outputArea.setText("");
                 JOptionPane.showMessageDialog(this, ex.getMessage(),
@@ -109,6 +112,14 @@ public final class MainWindow extends JFrame {
             Toolkit.getDefaultToolkit().getSystemClipboard()
                     .setContents(new StringSelection(export), null);
             dictionary = BotExporter.markAllSent(dictionary);
+            metadata = metadata.withBotExport();
+            ensureId();
+            try {
+                store.save(new DictionaryJsonSerializer.Root(dictionaryId, Instant.now(), dictionary, settings, metadata));
+            } catch (Exception io) {
+                JOptionPane.showMessageDialog(this, io.getMessage(), "Ошибка сохранения", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
             firstMessageCheck.setSelected(false);
             refreshDictView();
         });
@@ -119,6 +130,12 @@ public final class MainWindow extends JFrame {
             outputArea.setText("");
         });
         modeBox.addActionListener(e -> settings = parseMode());
+        // TZ 18.8: auto checkbox from metadata counters
+        if (metadata.totalCompressions() == 0 && metadata.supplementCount() == 0) {
+            firstMessageCheck.setSelected(true);
+        } else {
+            firstMessageCheck.setSelected(false);
+        }
     }
 
     private void onCompress() {
@@ -156,6 +173,7 @@ public final class MainWindow extends JFrame {
                 try {
                     result = compressor.compress(sourceText, baseline, progress);
                     dictionary = result.dictionary();
+                    metadata = metadata.withCompression(java.time.LocalDate.now().toString());
                 } catch (Compressor.CompressionInterruptedException ex) {
                     interrupted = true;
                     iex = ex;
@@ -234,7 +252,7 @@ public final class MainWindow extends JFrame {
         }
         ensureId();
         try {
-            store.save(new DictionaryJsonSerializer.Root(dictionaryId, Instant.now(), dictionary));
+            store.save(new DictionaryJsonSerializer.Root(dictionaryId, Instant.now(), dictionary, settings, metadata));
             JOptionPane.showMessageDialog(this,
                     "Сохранено: " + store.fileFor(dictionaryId).toAbsolutePath(),
                     "Сохранение", JOptionPane.INFORMATION_MESSAGE);
@@ -260,6 +278,13 @@ public final class MainWindow extends JFrame {
             DictionaryJsonSerializer.Root root = store.load(chosen);
             dictionary = root.dictionary();
             dictionaryId = root.id();
+            metadata = root.metadata();
+            // TZ 18.8: auto checkbox from metadata counters
+            if (metadata.totalCompressions() == 0 && metadata.supplementCount() == 0) {
+                firstMessageCheck.setSelected(true);
+            } else {
+                firstMessageCheck.setSelected(false);
+            }
             refreshDictView();
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Ошибка загрузки",
