@@ -31,6 +31,7 @@ public final class MainWindow extends JFrame {
     private final JTextArea outputArea = new JTextArea();
     private final JTextArea dictArea = new JTextArea();
     private final JCheckBox firstMessageCheck = new JCheckBox("Первое сообщение", true);
+    private final JCheckBox ignoreCommentsCheck = new JCheckBox("Игнорировать комментарии", false);
     private final JComboBox<String> modeBox = new JComboBox<>(new String[]{"max-cjk", "code", "chat"});
     private final JButton compressBtn = new JButton("Сжать");
     private final JButton decompressBtn = new JButton("Распаковать");
@@ -66,6 +67,7 @@ public final class MainWindow extends JFrame {
         JPanel options = new JPanel(new BorderLayout());
         options.add(new JLabel("Режим: "), BorderLayout.WEST);
         options.add(modeBox, BorderLayout.CENTER);
+        options.add(ignoreCommentsCheck, BorderLayout.EAST);
         JPanel north = new JPanel(new BorderLayout());
         north.add(buttons, BorderLayout.NORTH);
         north.add(options, BorderLayout.CENTER);
@@ -211,11 +213,12 @@ public final class MainWindow extends JFrame {
     }
 
     private CompressionSettings parseMode() {
-        return switch ((String) modeBox.getSelectedItem()) {
+        CompressionSettings base = switch ((String) modeBox.getSelectedItem()) {
             case "code" -> CompressionSettings.code();
             case "chat" -> CompressionSettings.chat();
             default -> CompressionSettings.maxCjk();
         };
+        return base.withIgnoreComments(ignoreCommentsCheck.isSelected());
     }
 
     private void ensureId() {
