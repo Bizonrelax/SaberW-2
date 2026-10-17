@@ -69,14 +69,3 @@ Jackson (com.fasterxml.jackson.core:jackson-databind, version 2.17.2) — Apache
 JUnit 5 (org.junit.jupiter:junit-jupiter) — Eclipse Public License 2.0 — test-scope only, not shipped in the artifact
 Launch4j (launch4j-maven-plugin, build-time only) — BSD-style license
 See the NOTICE file and the licenses/ directory for full attribution and license texts.
-
-
-
-***
-
-### Что изменилось и почему это важно:
-1. **Добавлены бейджи** — они визуально делают репозиторий живым и профессиональным.
-2. **Появился блок "О проекте" и "Как это работает"** — теперь любой разработчик, зашедший на страницу, за 10 секунд поймет, какую боль решает инструмент (экономия токенов, обход лимитов LLM) и как он устроен под капотом.
-3. **Упомянуты фишки архитектуры** (Exact-span semantics, Shielding, Comment masking) — это показывает глубину проработки кода.
-4. **Инструкции по сборке и CI/CD** — теперь понятно, как запустить проект локально и откуда брать готовые `.exe` файлы (из раздела Releases, который кодер только что починил).
-
