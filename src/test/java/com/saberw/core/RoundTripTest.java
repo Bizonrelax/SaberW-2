@@ -120,4 +120,41 @@ class RoundTripTest {
         assertEquals(6, id.length());
         assertTrue(id.matches("[A-Za-z0-9]{6}"), "Bad ID: " + id);
     }
+
+    // ---- Exact-separator phrase round-trips (fix: preserve exact separators in phrase values) ----
+
+    /** Compresses with phrase settings and asserts exact round-trip + real compression. */
+    private static void assertPhraseRoundTrip(String text) {
+        CompressionSettings settings = new CompressionSettings(3, 2, 3, 0, false);
+        Compressor compressor = new Compressor(settings);
+        Compressor.Result result = compressor.compress(text);
+        Decompressor decompressor = new Decompressor(result.dictionary());
+        assertEquals(text, decompressor.decompress(result.compressedText()),
+                "Exact round-trip failed for: " + text);
+        assertTrue(result.compressedText().length() < text.length(),
+                "Compressed output must be shorter than the input");
+        boolean hasPhraseValue = result.dictionary().entries().stream()
+                .anyMatch(e -> e.value().tokens().get(0).text().indexOf(' ') >= 0);
+        assertTrue(hasPhraseValue, "Dictionary must contain a multi-word phrase value");
+    }
+
+    @Test
+    void phraseWithPeriodSeparatorRoundTrip() {
+        assertPhraseRoundTrip("aa quick brown, fox jumps bb aa quick brown, fox jumps bb aa");
+    }
+
+    @Test
+    void phraseWithNewlineAndCommaSeparatorsRoundTrip() {
+        assertPhraseRoundTrip("start line one\ntwo three start line one\ntwo three start start");
+    }
+
+    @Test
+    void phraseWithDoubleSpaceSeparatorRoundTrip() {
+        assertPhraseRoundTrip("double space phrase here double space phrase here double");
+    }
+
+    @Test
+    void phraseAtTextEndRoundTrip() {
+        assertPhraseRoundTrip("prefix prefix final phrase at the end prefix prefix final phrase at the end");
+    }
 }

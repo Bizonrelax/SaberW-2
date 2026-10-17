@@ -48,6 +48,10 @@ public final class Compressor {
         final int tokenCount;
         /** Atom span of an occurrence in the token stream (words + separators between them). */
         int spanTokens;
+        /** Token index of the last start position seen for this raw (exact-span bookkeeping). */
+        int lastStart = -1;
+        /** WORD texts of a phrase candidate, in order (empty for word candidates). */
+        String[] words = new String[0];
         int frequency;
         long savings;
 
@@ -56,10 +60,12 @@ public final class Compressor {
             this.frequency = frequency;
             this.charLength = charLength;
             this.tokenCount = tokenCount;
-            this.spanTokens = countWordTokens(raw); // conservative default, refined in compress()
+            this.spanTokens = tokenCount; // exact atom span is computed in compress() from the stream
         }
 
         int spanTokens() { return spanTokens; }
+
+        String[] words() { return words; }
 
         String raw() { return raw; }
         int frequency() { return frequency; }
@@ -135,29 +141,33 @@ public final class Compressor {
             remaining.put(e.getKey(), new Candidate(e.getKey(), fr[0], fr[1], 1));
         }
         // Maximal-phrase filter at the TOKEN level: a phrase is dropped only if some longer
-        // candidate matches it token-by-token as a contiguous slice. A mere string prefix is
-        // NOT enough: separators between tokens (e.g. ". ") make the raw strings look like
-        // prefixes while the extra token never actually matches. On top of that, a phrase whose
-        // exact word sequence never occurs in the token stream (e.g. one glued across a NEWLINE
-        // by the space-joined raw representation) is NOT applicable to the replacement pass:
-        // registering such a phrase creates a dead code that drags all of its working
-        // sub-phrases down during the pruning cascade (root cause of repeatedPhraseGetsCoded).
+        // candidate contains it as a contiguous WORD slice. Phrase raws are EXACT ranges of
+        // the original text (words and every separator atom between them concatenated), so a
+        // word-slice containment check needs the words of each raw; those come from the
+        // per-run extraction (candidate.tokenCount() counts WORD atoms, separators included
+        // in charLength only). Applicability is guaranteed by construction: every extracted
+        // raw equals joinRaw(tokens, lastStart, spanTokens) - an exact concatenation of
+        // consecutive chunks of the stream - so the replacement pass can always match it.
         List<Candidate> sortedByTokensDesc = new ArrayList<>(phraseCandidates);
         sortedByTokensDesc.sort(Comparator.comparingInt(Candidate::tokenCount).reversed());
+        Map<String, String[]> wordsOfRaw = new HashMap<>();
+        for (Candidate c : phraseCandidates) {
+            wordsOfRaw.put(c.raw(), c.words());
+        }
         List<Candidate> maximalPhrases = new ArrayList<>();
         for (Candidate c : sortedByTokensDesc) {
-            String[] parts = c.raw().split(" ");
+            String[] parts = c.words();
             boolean covered = false;
             for (Candidate longer : maximalPhrases) {
                 if (longer.tokenCount() <= c.tokenCount()) {
                     break; // sorted desc: nothing further can strictly contain c's length
                 }
-                if (containsTokenSequence(longer.raw().split(" "), parts)) {
+                if (containsTokenSequence(longer.words(), parts)) {
                     covered = true;
                     break;
                 }
             }
-            if (!covered && isApplicablePhrase(tokens, parts)) {
+            if (!covered) {
                 maximalPhrases.add(c);
             }
         }
@@ -192,19 +202,14 @@ public final class Compressor {
         // more atoms than tokenCount(), so the bound must account for the widest actual token
         // span of any pool candidate - otherwise simulateCodes/chooseReplacement can never
         // see the full phrase and its frequency collapses to 0 (dead-code cascade).
+        // Exact-span candidates carry their atom span directly (spanTokens/lastStart were
+        // recorded during extraction), so no re-scan of the stream is needed here.
         int maxPhraseTokens = settings.minPhraseLength();
         for (Candidate c : phraseCandidates) {
-            c.spanTokens = Math.max(c.tokenCount(), maxSpanAtoms(tokens, c.raw()));
             maxPhraseTokens = Math.max(maxPhraseTokens, c.spanTokens);
         }
-        for (Map.Entry<String, Candidate> e : remaining.entrySet()) {
-            Candidate c = e.getValue();
-            if (c.spanTokens <= 1) { // word candidates: refine against the real stream too
-                c.spanTokens = Math.max(1, maxSpanAtoms(tokens, c.raw()));
-            }
-        }
         for (String p : phraseToCode.keySet()) {
-            maxPhraseTokens = Math.max(maxPhraseTokens, countWordTokens(p));
+            maxPhraseTokens = Math.max(maxPhraseTokens, p.split(" ").length);
         }
         this.phraseMaxTokens = maxPhraseTokens;
 
@@ -298,7 +303,10 @@ public final class Compressor {
                     ? null : chooseReplacement(tokens, i, wordToCode, phraseToCode, false);
             if (decision != null) {
                 int len = decision[0];
-                String raw = len == 1 ? tokens.get(i).text() : joinedWordRaw(tokens, i, len);
+                // Exact-range semantics: the consumed value is the verbatim concatenation of
+                // the atoms in the matched span (words AND separators), identical to the raw
+                // stored in the dictionary and used as an appliedCount key.
+                String raw = joinRaw(tokens, i, len);
                 String code = len == 1 ? wordToCode.get(raw) : phraseToCode.get(raw);
                 out.append(code);
                 appliedCount.merge(raw, 1, Integer::sum);
@@ -446,51 +454,44 @@ public final class Compressor {
     }
 
     /**
-     * Finds repeated phrases (runs of >= minPhraseLength consecutive WORD tokens) using a
-     * suffix-array + LCP approach over the token-id stream (Technical Specification 3.2.3).
-     * Returns candidates that satisfy the savings formula for step-1 codes.
+     * Finds repeated phrases using a suffix-array + LCP approach over the WORD-id stream
+     * (Technical Specification 3.2.3). Returns candidates that satisfy the savings formula
+     * for step-1 codes. Exact-range semantics: every candidate raw is the verbatim
+     * concatenation of the consecutive token chunks of one occurrence (words AND the
+     * separator atoms between them), so dictionary values round-trip separators losslessly.
      */
     List<Candidate> findPhrases(List<SaberTokenizer.Token> tokens) {
         if (settings.minPhraseLength() < 2) {
             return List.of(); // phrase pass disabled by settings
         }
-        // Collect all WORD positions into a compact sequence with run-boundary awareness:
-        // a phrase is a contiguous slice of the token list consisting only of WORD tokens.
-        // We build the list of "word-only segments" and run suffix analysis inside each segment.
-        Map<String, int[]> found = new LinkedHashMap<>(); // phraseRaw -> [frequency, charLength]
+        Map<String, int[]> found = new LinkedHashMap<>(); // phraseRaw -> [frequency, charLength, wordCount]
         Map<String, Integer> ids = new HashMap<>(); // word -> id in the compact sequence
+        Set<String> seenInRun = new HashSet<>(); // raws already counted for the current run
 
         // Compress the token stream into a word-only sequence, remembering for every word its
-        // index in the original token list. A candidate phrase must consist of CONSECUTIVE
-        // words in the original text (only separator atoms may sit between them); otherwise
-        // the replacement pass could never apply it. This also lets phrases span across
-        // ". " separators ("... в тексте. это ..."), which the old WORD-segment split missed.
-        // A run of candidate words continues across separator atoms whose text is ONLY
-        // whitespace (space/tab/newline): those are exactly the separators the replacement
-        // pass tolerates when it matches a phrase token-by-token. Punctuation separators
-        // (". ", ", ", ":"), escape atoms, emoji and masked (comment) positions still break
-        // the run, so every extracted phrase raw is an exact concatenation of consecutive
-        // chunks of the original text and round-trips losslessly through the dictionary.
+        // index in the original token list. A run of candidate words continues across
+        // separator atoms (any separator - " ", ". ", ", ", "\n" - keeps the run alive);
+        // ESCAPE_ATOM / EMOJI atoms and masked (comment) positions terminate it. Every slice
+        // of the run therefore maps to an exact contiguous range of the original stream, and
+        // the extracted raw preserves the real separators of that range.
         List<Integer> wordPos = new ArrayList<>();
         List<Integer> seq = new ArrayList<>();
         for (int i = 0; i < tokens.size(); i++) {
             SaberTokenizer.Token t = tokens.get(i);
-            if (t.type() == SaberTokenizer.TokenType.WORD
-                    && (maskedToken == null || !maskedToken[i])) {
+            boolean masked = maskedToken != null && i < maskedToken.length && maskedToken[i];
+            if (!masked && t.type() == SaberTokenizer.TokenType.WORD) {
                 seq.add(ids.computeIfAbsent(t.text(), w -> ids.size()));
                 wordPos.add(i);
                 continue;
             }
-            boolean whitespaceBridge = t.type() == SaberTokenizer.TokenType.SEPARATOR
-                    && (maskedToken == null || !maskedToken[i])
-                    && isWhitespaceOnly(t.text());
-            if (!whitespaceBridge) {
-                flushWordRun(seq, wordPos, tokens, found);
+            if (masked || t.type() != SaberTokenizer.TokenType.SEPARATOR) {
+                flushWordRun(seq, wordPos, tokens, found, seenInRun);
                 seq.clear();
                 wordPos.clear();
+                seenInRun.clear();
             }
         }
-        flushWordRun(seq, wordPos, tokens, found);
+        flushWordRun(seq, wordPos, tokens, found, seenInRun);
 
         List<Candidate> result = new ArrayList<>();
         for (Map.Entry<String, int[]> e : found.entrySet()) {
@@ -498,38 +499,64 @@ public final class Compressor {
             int l = e.getValue()[1];
             int tokensCnt = e.getValue()[2];
             if (f >= settings.minFrequency() && savingsNew(f, l, 1) > 0) {
-                result.add(new Candidate(e.getKey(), f, l, tokensCnt));
+                Candidate c = new Candidate(e.getKey(), f, l, tokensCnt);
+                // WORD texts of the raw (for the maximal-phrase filter): re-tokenize the
+                // exact range - words are non-whitespace runs inside it.
+                c.words = splitWords(e.getKey());
+                // Exact atom span and last start position from the token stream.
+                int[] sl = spanAndLastStart(tokens, c.words);
+                c.spanTokens = Math.max(sl[0], tokensCnt);
+                c.lastStart = sl[1];
+                c.frequency = f;
+                result.add(c);
             }
         }
         return result;
     }
 
-    /** True when the atom text consists exclusively of whitespace characters. */
-    private static boolean isWhitespaceOnly(String s) {
-        for (int k = 0; k < s.length(); k++) {
-            if (!Character.isWhitespace(s.charAt(k))) {
-                return false;
+    /** Non-whitespace runs of an exact phrase raw, in order. */
+    private static String[] splitWords(String raw) {
+        List<String> ws = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        for (int k = 0; k < raw.length(); k++) {
+            char ch = raw.charAt(k);
+            if (Character.isWhitespace(ch)) {
+                if (cur.length() > 0) {
+                    ws.add(cur.toString());
+                    cur.setLength(0);
+                }
+            } else {
+                cur.append(ch);
             }
         }
-        return !s.isEmpty();
-    }
-
-    /** Space-joined raw of {@code count} words starting at word index {@code base} of a run. */
-    private static String joinedWordRawAt(List<SaberTokenizer.Token> tokens, List<Integer> wordPos,
-                                          int base, int count) {
-        StringBuilder sb = new StringBuilder();
-        for (int k = base; k < base + count; k++) {
-            if (sb.length() > 0) {
-                sb.append(' ');
-            }
-            sb.append(tokens.get(wordPos.get(k)).text());
+        if (cur.length() > 0) {
+            ws.add(cur.toString());
         }
-        return sb.toString();
+        return ws.toArray(new String[0]);
     }
 
-    /** Runs suffix-array phrase extraction over one run of consecutive WORD tokens. */
+    /** Widest atom span of an exact occurrence of {@code words} and the last start index seen. */
+    private static int[] spanAndLastStart(List<SaberTokenizer.Token> tokens, String[] words) {
+        int best = -1;
+        int last = -1;
+        int n = tokens.size();
+        for (int i = 0; i < n; i++) {
+            if (tokens.get(i).type() != SaberTokenizer.TokenType.WORD) {
+                continue;
+            }
+            int end = wordSequenceEndsHere(tokens, i, words);
+            if (end >= 0) {
+                best = Math.max(best, end - i);
+                last = i;
+            }
+        }
+        return new int[]{best, last};
+    }
+
+    /** Runs suffix-array phrase extraction over one run of consecutive WORD atoms. */
     private void flushWordRun(List<Integer> seqIds, List<Integer> wordPos,
-                              List<SaberTokenizer.Token> tokens, Map<String, int[]> found) {
+                              List<SaberTokenizer.Token> tokens, Map<String, int[]> found,
+                              Set<String> seenInRun) {
         if (seqIds.size() < settings.minPhraseLength()) {
             return;
         }
@@ -537,13 +564,13 @@ public final class Compressor {
         for (int k = 0; k < s.length; k++) {
             s[k] = seqIds.get(k);
         }
-        extractPhrasesFromWords(s, wordPos, tokens, found);
+        extractPhrasesFromWords(s, wordPos, tokens, found, seenInRun);
     }
 
     /** Suffix-array + LCP phrase extraction within one run of consecutive WORD atoms. */
     private void extractPhrasesFromWords(int[] seq, List<Integer> wordPos,
                                          List<SaberTokenizer.Token> tokens,
-                                         Map<String, int[]> found) {
+                                         Map<String, int[]> found, Set<String> seenInRun) {
         int len = seq.length;
         // Simple O(n log n) suffix array via sorting indices with comparator on suffixes
         Integer[] sa = new Integer[len];
@@ -558,8 +585,15 @@ public final class Compressor {
             lcp[k] = commonPrefixLength(seq, sa[k - 1], sa[k]);
         }
 
-        // For every minimum phrase length, group suffixes sharing an LCP >= p
-        for (int p = settings.minPhraseLength(); p <= len; p++) {
+        // For every minimum phrase length, group suffixes sharing an LCP >= p and aggregate
+        // EXACT ranges: each suffix start maps to the token span [wordPos[start],
+        // endOfWords(start+p)), whose raw is the verbatim concatenation of those atoms.
+        // Occurrences whose separators differ produce different raws (per-raw frequency),
+        // which is exactly the precise-range semantics the replacement pass consumes.
+        // MVP practical cap per ТЗ 8.2.6: protects against cubic blowup on periodic texts
+        // (long runs x all suffixes x StringBuilder concatenation caused OOM on ~1500 words).
+        int pMax = Math.min(len, 64);
+        for (int p = settings.minPhraseLength(); p <= pMax; p++) {
             int k = 1;
             while (k < len) {
                 if (lcp[k] < p) {
@@ -571,21 +605,57 @@ public final class Compressor {
                 while (j < len && lcp[j] >= p) {
                     j++;
                 }
-                int freq = j - groupStart; // number of suffixes in the group
-                // The shared prefix of the group has length >= p; take exactly p tokens
-                int base = sa[groupStart];
-                String raw = joinedWordRawAt(tokens, wordPos, base, p);
-                int charLen = raw.length();
-                if (charLen >= settings.minWordLength()) {
-                    int[] prev = found.get(raw);
-                    if (prev == null || freq > prev[0]) {
-                        // [frequency, charLength, tokenCount]
-                        found.put(raw, new int[]{freq, charLen, p});
+                // Skip groups that cannot reach minFrequency even counting every start.
+                if (j - groupStart < settings.minFrequency()) {
+                    k = j;
+                    continue;
+                }
+                // Aggregate EXACT ranges within the LCP group: two occurrences of the same
+                // word sequence with different separators (". " vs " ") are DIFFERENT raws,
+                // so each distinct verbatim range concatenation gets its own frequency count.
+                Map<String, Integer> rawFreq = new HashMap<>();
+                for (int g = groupStart; g < j; g++) {
+                    int start = sa[g];
+                    String raw = exactRawAt(tokens, wordPos, start, p);
+                    if (raw == null) {
+                        continue; // run ends at the stream tail before the full span
+                    }
+                    rawFreq.merge(raw, 1, Integer::sum);
+                }
+                for (Map.Entry<String, Integer> rf : rawFreq.entrySet()) {
+                    if (rf.getValue() < settings.minFrequency()) {
+                        continue; // this exact range repeats too rarely to code
+                    }
+                    String raw = rf.getKey();
+                    int charLen = raw.length();
+                    if (charLen >= settings.minWordLength() && seenInRun.add(raw)) {
+                        // [frequency, charLength, wordCount]
+                        found.put(raw, new int[]{rf.getValue(), charLen, p});
                     }
                 }
                 k = j;
             }
         }
+    }
+
+    /**
+     * Exact raw of the range covering {@code count} words starting at word index
+     * {@code base} of a run: verbatim concatenation of every atom from the first WORD
+     * through the last WORD of the slice (separators included). Null when the slice
+     * runs past the end of the token list.
+     */
+    private static String exactRawAt(List<SaberTokenizer.Token> tokens, List<Integer> wordPos,
+                                     int base, int count) {
+        int startAtom = wordPos.get(base);
+        int lastWordAtom = wordPos.get(base + count - 1);
+        if (lastWordAtom >= tokens.size()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int a = startAtom; a <= lastWordAtom; a++) {
+            sb.append(tokens.get(a).text());
+        }
+        return sb.toString();
     }
 
     private static int compareSuffixes(int[] seq, int a, int b) {
@@ -643,29 +713,6 @@ public final class Compressor {
     }
 
     /**
-     * Applicability check for phrase candidates: returns true only when the word sequence
-     * occurs in the token stream exactly the way the replacement pass can match it - as a
-     * span of WORD atoms separated exclusively by SEPARATOR atoms (any ESCAPE_ATOM or EMOJI
-     * inside the span blocks the match). Phrases glued across a NEWLINE/emoji by the
-     * space-joined raw representation are NOT applicable and must never enter the pool:
-     * they would be registered as dead codes and pull their working sub-phrases down in
-     * the prune cascade.
-     */
-    private static boolean isApplicablePhrase(List<SaberTokenizer.Token> tokens, String[] words) {
-        int n = tokens.size();
-        for (int i = 0; i < n; i++) {
-            if (tokens.get(i).type() != SaberTokenizer.TokenType.WORD) {
-                continue;
-            }
-            int end = wordSequenceEndsHere(tokens, i, words);
-            if (end >= 0) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * End index (exclusive) of the token span starting at WORD position {@code start} whose
      * WORD atoms spell out {@code words} exactly (separators between them allowed), or -1.
      */
@@ -694,16 +741,17 @@ public final class Compressor {
         return -1;
     }
 
-    /** A simulated stream element: either a raw literal piece or a collapsed coded WORD token. */
+    /** A simulated stream element: either a raw literal piece or a collapsed coded span. */
     private record SimToken(boolean isWord, String raw, String code) {}
 
     /**
      * Builds the simulated token stream after applying all registered entries exactly the
      * way the real replacement pass does (chooseReplacement with ignoreGain=true, so every
-     * registration is counted as used at least once). Matches collapse into a single
-     * WORD-like token whose raw is the space-joined value; unregistered content stays
-     * verbatim. Separator atoms between words make phrase raws never match across them,
-     * which mirrors the tokenizer's WORD-segment structure.
+     * registration is counted as used at least once). Matches collapse into a single WORD-like
+     * token whose raw is the VERBATIM concatenation of the matched atoms (exact-range
+     * semantics); unregistered content stays verbatim. Because every chunk of the simulated
+     * stream is an exact piece of the original text, counting occurrences of a candidate raw
+     * reduces to substring-style matching over concatenated chunk sequences.
      */
     private SimToken[] simulateCodes(List<SaberTokenizer.Token> tokens,
                                      Map<String, String> wordToCode,
@@ -720,16 +768,14 @@ public final class Compressor {
                 String bestRaw = null;
                 String bestCode = null;
                 // Longest registered entry wins at every position (mirrors chooseReplacement).
-                // A candidate phrase is a slice of consecutive WORD atoms; when the tokenizer
-                // emits separators as their own atoms ("тексте. " -> WORD + SEPARATOR), the
-                // raw string of such a slice still contains no separator chars, so we compare
-                // token-by-token instead of joining raws and doing an exact map lookup.
+                // Matching is EXACT: the phrase key must equal joinRaw(tokens, i, p), the
+                // verbatim concatenation of the candidate atom span (words and separators).
                 int maxP = Math.min(maxTokens, n - i);
-                for (int p = maxP; p >= 2 && !skipWord; p--) {
-                    String pc = matchPhraseAt(tokens, i, p, phraseToCode);
+                for (int p = maxP; p >= settings.minPhraseLength() && !skipWord; p--) {
+                    String pc = matchPhraseExact(tokens, i, p, phraseToCode);
                     if (pc != null) {
                         bestLen = p;
-                        bestRaw = joinedWordRaw(tokens, i, p);
+                        bestRaw = joinRaw(tokens, i, p);
                         bestCode = pc;
                         break;
                     }
@@ -754,150 +800,64 @@ public final class Compressor {
         return out.toArray(new SimToken[0]);
     }
 
-    /** Counts occurrences of a candidate raw (space-joined word sequence) in the simulated stream. */
+    /** Counts occurrences of an exact raw in the simulated stream via chunk concatenation. */
     private static int countRawOccurrences(SimToken[] sim, String raw) {
-        String[] parts = raw.split(" ");
         int cnt = 0;
         int n = sim.length;
         outer:
         for (int s = 0; s < n; s++) {
-            for (int k = 0; k < parts.length; k++) {
-                int idx = s + k;
-                if (idx >= n) {
-                    break outer;
+            StringBuilder sb = new StringBuilder();
+            for (int k = s; k < n; k++) {
+                String chunk = sim[k].raw();
+                if (sb.length() + chunk.length() > raw.length()) {
+                    continue outer;
                 }
-                SimToken st = sim[idx];
-                // exact match on collapsed coded tokens and plain WORD atoms; separator /
-                // escape / emoji atoms can never be part of a word sequence
-                if (!st.raw().equals(parts[k])) {
+                sb.append(chunk);
+                if (sb.length() == raw.length()) {
+                    if (sb.toString().equals(raw)) {
+                        cnt++;
+                    }
                     continue outer;
                 }
             }
-            cnt++;
         }
         return cnt;
     }
 
-    /** Raw string of the entry actually matched at position {@code i} with token length {@code len}. */
-    private static String matchedRaw(List<SaberTokenizer.Token> tokens, int i, int len,
-                                    Map<String, String> wordToCode, Map<String, String> phraseToCode) {
-        String one = tokens.get(i).text();
-        if (len == 1 && wordToCode.containsKey(one)) {
-            return one;
-        }
-        return joinedWordRaw(tokens, i, len);
-    }
-
-    /**
-     * Space-joined raw value of a candidate phrase starting at token {@code start}: only
-     * WORD atoms contribute their text, separator atoms inside the span are skipped. This
-     * makes phrase raws independent of how the tokenizer splits "word. word" into atoms.
-     */
-    private static String joinedWordRaw(List<SaberTokenizer.Token> tokens, int start, int count) {
+    /** Verbatim concatenation of the atom texts in [start, start+count). */
+    private static String joinRaw(List<SaberTokenizer.Token> tokens, int start, int count) {
         StringBuilder sb = new StringBuilder();
         for (int k = start; k < start + count && k < tokens.size(); k++) {
-            SaberTokenizer.Token t = tokens.get(k);
-            if (t.type() != SaberTokenizer.TokenType.WORD) {
-                continue;
-            }
-            if (sb.length() > 0) {
-                sb.append(' ');
-            }
-            sb.append(t.text());
+            sb.append(tokens.get(k).text());
         }
         return sb.toString();
     }
 
     /**
-     * Token-level lookup of a registered phrase: checks whether the span [i, i+span)
-     * consists (modulo separator atoms) of exactly the words of some phrase key. Returns
-     * the code of the matching entry or null.
+     * Exact phrase lookup: returns the code of the registered phrase whose key equals the
+     * verbatim concatenation of the atoms in [i, i+span), or null. The span must begin on a
+     * WORD atom and contain at least two words (separators between them are part of the raw).
      */
-    private static String matchPhraseAt(List<SaberTokenizer.Token> tokens, int i, int span,
-                                        Map<String, String> phraseToCode) {
+    private static String matchPhraseExact(List<SaberTokenizer.Token> tokens, int i, int span,
+                                           Map<String, String> phraseToCode) {
         if (phraseToCode.isEmpty()) {
             return null;
         }
         if (i >= tokens.size() || tokens.get(i).type() != SaberTokenizer.TokenType.WORD) {
             return null; // a phrase match must START on a WORD atom at position i
         }
-        int wordIdx = 0;
-        String firstWord = null;
-        for (int k = i; k < i + span; k++) {
-            SaberTokenizer.Token t = tokens.get(k);
-            if (t.type() != SaberTokenizer.TokenType.WORD) {
-                continue;
+        int wordCount = 0;
+        for (int k = i; k < i + span && k < tokens.size(); k++) {
+            if (tokens.get(k).type() == SaberTokenizer.TokenType.WORD) {
+                wordCount++;
+            } else if (tokens.get(k).type() != SaberTokenizer.TokenType.SEPARATOR) {
+                return null; // escape/emoji atoms can never sit inside a matched phrase span
             }
-            if (wordIdx == 0) {
-                firstWord = t.text();
-            }
-            wordIdx++;
         }
-        if (wordIdx < 2 || firstWord == null) {
+        if (wordCount < 2) {
             return null;
         }
-        for (Map.Entry<String, String> e : phraseToCode.entrySet()) {
-            String[] words = e.getKey().split(" ");
-            if (words.length != wordIdx || !words[0].equals(firstWord)) {
-                continue;
-            }
-            int w = 0;
-            boolean ok = true;
-            for (int k = i; k < i + span && ok; k++) {
-                SaberTokenizer.Token t = tokens.get(k);
-                if (t.type() != SaberTokenizer.TokenType.WORD) {
-                    continue;
-                }
-                if (!t.text().equals(words[w])) {
-                    ok = false;
-                }
-                w++;
-            }
-            if (ok) {
-                return e.getValue();
-            }
-        }
-        return null;
-    }
-
-    /** Widest atom span (start..end inclusive distance) of an exact occurrence of {@code raw}. */
-    private static int maxSpanAtoms(List<SaberTokenizer.Token> tokens, String raw) {
-        String[] words = raw.split(" ");
-        int best = -1;
-        for (int i = 0; i < tokens.size(); i++) {
-            if (tokens.get(i).type() != SaberTokenizer.TokenType.WORD) {
-                continue;
-            }
-            int end = wordSequenceEndsHere(tokens, i, words);
-            if (end >= 0) {
-                best = Math.max(best, end - i);
-            }
-        }
-        return Math.max(best, words.length);
-    }
-
-    /** Atom span consumed by the occurrence of {@code raw} starting at token {@code start}, or -1. */
-    private static int spanAtomsAt(List<SaberTokenizer.Token> tokens, int start, String raw) {
-        return wordSequenceEndsHere(tokens, start, raw.split(" "));
-    }
-
-    /** Number of WORD tokens a space-joined phrase raw string consists of. */
-    private static int countWordTokens(String rawPhrase) {
-        int cnt = 1;
-        for (int i = 0; i < rawPhrase.length(); i++) {
-            if (rawPhrase.charAt(i) == ' ') {
-                cnt++;
-            }
-        }
-        return cnt;
-    }
-
-    private static String joinRaw(List<SaberTokenizer.Token> tokens, int start, int count) {
-        StringBuilder sb = new StringBuilder();
-        for (int k = start; k < start + count; k++) {
-            sb.append(tokens.get(k).text());
-        }
-        return sb.toString();
+        return phraseToCode.get(joinRaw(tokens, i, span));
     }
 
     /**
@@ -923,16 +883,16 @@ public final class Compressor {
             }
         }
         // Phrase candidates: longest-first, first positive gain wins (longer => bigger gain).
-        // Match token-by-token (separators inside the span are tolerated), mirroring
-        // simulateCodes; the phrase raw is the space-joined word sequence.
+        // EXACT matching (verbatim span concatenation), mirroring simulateCodes; the phrase
+        // raw consumed by the replacement pass is joinRaw(tokens, i, p) - identical key.
         if (phraseMaxTokens > 0) {
             for (int p = Math.min(phraseMaxTokens, n - i); p >= settings.minPhraseLength(); p--) {
                 if (i + p > n) {
                     continue;
                 }
-                String pc = matchPhraseAt(tokens, i, p, phraseToCode);
+                String pc = matchPhraseExact(tokens, i, p, phraseToCode);
                 if (pc != null) {
-                    long gain = joinedWordRaw(tokens, i, p).length() - 1L;
+                    long gain = joinRaw(tokens, i, p).length() - 1L;
                     if (ignoreGain || gain > bestGain) {
                         bestGain = gain;
                         bestLen = p;
