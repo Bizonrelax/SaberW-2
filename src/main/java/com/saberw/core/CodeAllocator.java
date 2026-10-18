@@ -40,6 +40,20 @@ public final class CodeAllocator {
         return step1Cursor > STEP1_RANGE_END;
     }
 
+    /**
+     * True only when there is no free (not in {@code taken}) step-1 code left between the
+     * cursor and the end of the step-1 range, i.e. the very next allocation would be a
+     * step-2 code. Used by the compressor to apply the step-2 frequency gate (TZ 7, 9.2).
+     */
+    public boolean nextIsStep2(java.util.Set<String> taken) {
+        for (int cp = step1Cursor; cp <= STEP1_RANGE_END; cp++) {
+            if (!taken.contains(String.valueOf(Character.toChars(cp)))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** All step-1 codes as a list (helper for tests/tools). */
     public static List<String> allStep1Codes() {
         List<String> list = new ArrayList<>(STEP1_CAPACITY);

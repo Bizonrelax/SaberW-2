@@ -84,6 +84,7 @@ public final class DictionaryJsonSerializer {
         settingsNode.put("thresholdS", root.settings().thresholdS());
         settingsNode.put("normalizeCase", root.settings().normalizeCase());
         settingsNode.put("ignoreComments", root.settings().ignoreComments());
+        settingsNode.put("minFrequencyForStep2", root.settings().minFrequencyForStep2());
 
         ObjectNode dictNode = node.putObject("dictionary");
         dictNode.put("updatedAt", Instant.now().toString());
@@ -148,7 +149,8 @@ public final class DictionaryJsonSerializer {
                 sn.path("minPhraseLength").asInt(defaults.minPhraseLength()),
                 sn.path("thresholdS").asInt(defaults.thresholdS()),
                 sn.path("normalizeCase").asBoolean(defaults.normalizeCase()),
-                sn.path("ignoreComments").asBoolean(false));
+                sn.path("ignoreComments").asBoolean(false),
+                sn.path("minFrequencyForStep2").asInt(6));
 
         Dictionary dictionary = new Dictionary();
         for (JsonNode en : node.path("dictionary").path("entries")) {
