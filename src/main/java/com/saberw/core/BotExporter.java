@@ -30,27 +30,87 @@ public final class BotExporter {
      * @param compressed   the compressed message body
      */
     public static String build(Dictionary dictionary, boolean firstMessage, boolean normalized, String compressed) {
+        // Pre-compute the block texts (without separator) to pick a collision-free separator (TZ 18.6).
+        StringBuilder blocks = new StringBuilder();
+        if (firstMessage) {
+            blocks.append(load(T_BASE)).append("\n\n");
+            if (normalized) {
+                blocks.append(load(T_NORMALIZATION)).append("\n\n");
+            }
+            appendDictLines(blocks, dictionary.entries(), false, "");
+        } else {
+            List<DictEntry> newEntries = dictionary.entries().stream()
+                    .filter(en -> !en.sentToBot()).toList();
+            if (!newEntries.isEmpty()) {
+                blocks.append(load(T_MINIMAL)).append("\n\n");
+                blocks.append("Дополнение словаря:\n");
+                appendDictLines(blocks, newEntries, false, "");
+            }
+        }
+        String sep = resolveSeparator(blocks.toString(), "", compressed);
         StringBuilder sb = new StringBuilder();
         if (firstMessage) {
             sb.append(load(T_BASE)).append("\n\n");
             if (normalized) {
                 sb.append(load(T_NORMALIZATION)).append("\n\n");
             }
-            appendDictLines(sb, dictionary.entries(), true);
+            appendDictLines(sb, dictionary.entries(), true, sep);
         } else {
             List<DictEntry> newEntries = dictionary.entries().stream()
                     .filter(en -> !en.sentToBot()).toList();
             if (newEntries.isEmpty()) {
-                sb.append("Сообщение:\n___\n");
+                sb.append("Сообщение:\n").append(sep).append('\n');
             } else {
                 sb.append(load(T_MINIMAL)).append("\n\n");
                 sb.append("Дополнение словаря:\n");
-                appendDictLines(sb, newEntries, false);
-                sb.append("___\n");
+                appendDictLines(sb, newEntries, false, sep);
+                sb.append(sep).append('\n');
             }
         }
         sb.append(compressed);
         return sb.toString();
+    }
+
+    /**
+     * Serializes an entry value as the concatenation of ALL its tokens (TZ 10.2),
+     * then escapes backslashes, tabs, newlines and carriage returns so that a record
+     * always fits on one line and separators cannot be forged (TZ 23.1.8).
+     */
+    static String serializeValue(EntryValue v) {
+        StringBuilder raw = new StringBuilder();
+        for (EntryValue.ValueToken t : v.tokens()) {
+            if ("code".equals(t.type())) {
+                raw.append(t.code());
+            } else {
+                raw.append(t.text());
+            }
+        }
+        StringBuilder out = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            switch (c) {
+                case '\\' -> out.append("\\\\");
+                case '\t' -> out.append("\\t");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                default -> out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * Picks the first block separator candidate that does not collide with the
+     * text of any exported block (TZ 18.6).
+     */
+    static String resolveSeparator(String dictText, String instruction, String compressed) {
+        String[] candidates = {"___", "~~~", "###", "===", "***"};
+        for (String cand : candidates) {
+            if (!dictText.contains(cand) && !instruction.contains(cand) && !compressed.contains(cand)) {
+                return cand;
+            }
+        }
+        throw new IllegalStateException("All block separators collide");
     }
 
     /** Marks every entry as already sent to the bot (returns a new dictionary). */
@@ -62,13 +122,13 @@ public final class BotExporter {
         return updated;
     }
 
-    private static void appendDictLines(StringBuilder sb, List<DictEntry> entries, boolean withSeparator) {
+    private static void appendDictLines(StringBuilder sb, List<DictEntry> entries, boolean withSeparator, String sep) {
         for (DictEntry en : entries) {
             sb.append(en.code()).append('\t')
-              .append(en.value().tokens().get(0).text()).append('\n');
+              .append(serializeValue(en.value())).append('\n');
         }
         if (withSeparator) {
-            sb.append("___\n");
+            sb.append(sep).append('\n');
         }
     }
 
