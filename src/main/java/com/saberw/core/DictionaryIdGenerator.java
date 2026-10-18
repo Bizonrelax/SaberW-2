@@ -2,11 +2,13 @@ package com.saberw.core;
 
 import java.security.SecureRandom;
 
-/** Dictionary ID generator (see Technical Specification section 5): 6 alphanumeric characters, A-Z a-z 0-9. */
+/** Dictionary ID generator (see Technical Specification section 5): 6 characters from the 79-char alphabet. */
 public final class DictionaryIdGenerator {
 
+    // Полный алфавит ИД словаря по ТЗ §5: 62 латиница+цифры + 17 спецсимволов !@#$%&()=+[]{}^;, = 62+17=79.
+    // Примечание: §, точка, пробел, дефис и подчёркивание в алфавит НЕ входят.
     private static final char[] ALPHABET =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&()=+[]{}^;,".toCharArray();
     public static final int ID_LENGTH = 6;
 
     private final SecureRandom random = new SecureRandom();

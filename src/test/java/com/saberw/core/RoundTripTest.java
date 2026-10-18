@@ -118,7 +118,8 @@ class RoundTripTest {
         DictionaryIdGenerator gen = new DictionaryIdGenerator();
         String id = gen.next(x -> true);
         assertEquals(6, id.length());
-        assertTrue(id.matches("[A-Za-z0-9]{6}"), "Bad ID: " + id);
+        // ТЗ §5: алфавит ИД словаря — 79 символов (62 латиница+цифры + 17 спецсимволов), [ и ] экранированы.
+        assertTrue(id.matches("[A-Za-z0-9!@#$%&()=+\\[\\]{}^;,]{6}"), "Bad ID: " + id);
     }
 
     // ---- Exact-separator phrase round-trips (fix: preserve exact separators in phrase values) ----
