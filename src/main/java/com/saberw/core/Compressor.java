@@ -41,6 +41,11 @@ public final class Compressor {
         return (long) frequency * (lengthChars - codeLen);
     }
 
+    /** Step-2 gate (TZ 7, 9.2): a step-2 code may only be issued at frequency >= minFrequencyForStep2. */
+    static boolean eligibleForStep2(int frequency, CompressionSettings s) {
+        return frequency >= s.minFrequencyForStep2();
+    }
+
     /** A compression candidate: a raw string plus its frequency, character length and token count. Mutable: F/S are recomputed each greedy iteration. */
     static final class Candidate {
         final String raw;
@@ -252,6 +257,13 @@ public final class Compressor {
             }
             pool.sort(bySavings);
             Candidate winner = pool.get(0);
+            // Step-2 frequency gate (TZ 7, 9.2): a code from step 2 may only be issued when
+            // the winner's frequency reaches minFrequencyForStep2; otherwise the candidate is
+            // dropped from the pool without registration and the iteration restarts.
+            if (allocator.nextIsStep2(takenCodes) && !eligibleForStep2(winner.frequency(), settings)) {
+                remaining.remove(winner.raw());
+                continue;
+            }
             String code = allocator.next(takenCodes);
             takenCodes.add(code);
             boolean wordWin = winner.tokenCount() == 1;
