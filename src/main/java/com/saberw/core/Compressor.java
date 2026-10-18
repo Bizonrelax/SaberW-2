@@ -117,7 +117,9 @@ public final class Compressor {
             if (l < settings.minWordLength() || f < settings.minFrequency()) {
                 continue;
             }
-            if (savingsNew(f, l, 1) >= settings.thresholdS() && savingsNew(f, l, 1) > 0) {
+            // ТЗ п.7 (R-003): нейтральные кандидаты с S == thresholdS допускаются;
+            // добавочный гейт `> 0` убран — S=0 живёт, отбрасывается только S < порога.
+            if (savingsNew(f, l, 1) >= settings.thresholdS()) {
                 candidates.put(word, new int[]{f, l});
             }
         }
@@ -242,8 +244,9 @@ public final class Compressor {
             List<String> doomed = new ArrayList<>();
             for (Map.Entry<String, Candidate> e : remaining.entrySet()) {
                 Candidate c = e.getValue();
-                if (c.frequency() < settings.minFrequency() || c.savings() <= settings.thresholdS()
-                        || c.savings() <= 0) {
+                // ТЗ п.7 (R-003): doomed = частота ниже minFrequency ИЛИ S строго ниже порога;
+                // нейтральные кандидаты с S == thresholdS остаются в пуле.
+                if (c.frequency() < settings.minFrequency() || c.savings() < settings.thresholdS()) {
                     doomed.add(e.getKey());
                 } else {
                     pool.add(c);
@@ -510,7 +513,8 @@ public final class Compressor {
             int f = e.getValue()[0];
             int l = e.getValue()[1];
             int tokensCnt = e.getValue()[2];
-            if (f >= settings.minFrequency() && savingsNew(f, l, 1) > 0) {
+            // ТЗ п.7 (R-003): гейт `> 0` заменён на `>= thresholdS` — нейтральные фразы S=0 живут.
+            if (f >= settings.minFrequency() && savingsNew(f, l, 1) >= settings.thresholdS()) {
                 Candidate c = new Candidate(e.getKey(), f, l, tokensCnt);
                 // WORD texts of the raw (for the maximal-phrase filter): re-tokenize the
                 // exact range - words are non-whitespace runs inside it.
