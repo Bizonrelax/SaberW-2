@@ -41,6 +41,7 @@ public final class MainWindow extends JFrame {
     private final JButton loadBtn = new JButton("Загрузить");
     private final JButton clearBtn = new JButton("Очистить");
     private final JButton stopBtn = new JButton("Остановить поиск");
+    private final JButton aboutBtn = new JButton("Опр");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
 
     /** Cancellation flag: set on the EDT, polled by the background thread at iteration boundaries. */
@@ -58,7 +59,7 @@ public final class MainWindow extends JFrame {
         setSize(1200, 760);
         setLocationByPlatform(true);
 
-        JPanel buttons = new JPanel(new GridLayout(1, 7, 4, 0));
+        JPanel buttons = new JPanel(new GridLayout(1, 8, 4, 0));
         buttons.add(compressBtn);
         buttons.add(decompressBtn);
         buttons.add(forBotBtn);
@@ -66,6 +67,8 @@ public final class MainWindow extends JFrame {
         buttons.add(loadBtn);
         buttons.add(clearBtn);
         buttons.add(stopBtn);
+        aboutBtn.setToolTipText("О программе");
+        buttons.add(aboutBtn);
         JPanel options = new JPanel(new BorderLayout());
         options.add(new JLabel("Режим: "), BorderLayout.WEST);
         options.add(modeBox, BorderLayout.CENTER);
@@ -125,6 +128,7 @@ public final class MainWindow extends JFrame {
         });
         saveBtn.addActionListener(e -> saveDictionary());
         loadBtn.addActionListener(e -> loadDictionaryDialog());
+        aboutBtn.addActionListener(e -> new AboutDialog(this).setVisible(true));
         clearBtn.addActionListener(e -> {
             inputArea.setText("");
             outputArea.setText("");
