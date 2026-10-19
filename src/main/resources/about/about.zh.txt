@@ -1,0 +1,8 @@
+SaberW 2 是一款用于与神经网络聊天的文本压缩程序。
+功能：在您的消息中查找重复的词语和短语，并将其替换为 CJK Extension A 区间的短代码；向神经网络发送词典和说明。机器人的回复可无损地解包还原。
+目的：让大段消息、代码和日志适应神经网络的上下文限制，并消耗更少的令牌。
+适用人群：适合频繁与大语言模型交流并转发长文本、代码和文档的用户。
+下载地点：https://github.com/Bizonrelax/SaberW-2 → Releases (Latest)：SaberW-2.exe（Windows）、jar（任何装有 Java 21+ 的系统）、便携 zip（Windows，内置 JRE 21）。
+运行环境：Windows 10/11 x64 — 便携 zip 无需安装（内置 JRE）；exe 和 jar 需要 Java 21+。Linux 和 macOS — Java 21+。
+字体：界面使用系统无衬线字体；代码和压缩文本使用等宽字体。压缩文本包含 CJK Extension A 字符：显示这些字符需要覆盖该区间范围的字体 — Windows：SimSun 或 Microsoft YaHei（随东亚语言组件安装），通用免费选择：Noto Sans CJK SC。表情符号：Segoe UI Emoji（Windows）、Noto Color Emoji（Linux）。如果字符显示为方块，请安装 Noto Sans CJK SC。
+许可证：The Unlicense。项目仓库：https://github.com/Bizonrelax/SaberW-2
