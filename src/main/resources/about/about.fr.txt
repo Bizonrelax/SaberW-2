@@ -1,0 +1,8 @@
+SaberW 2 est un programme de compression de texte pour la correspondance avec les réseaux de neurones.
+Que fait-il : il repère dans votre message les mots et phrases répétés et les remplace par des codes courts issus de la plage CJK Extension A ; il transmet au réseau de neurones le dictionnaire et les instructions. La réponse du bot est décompressée sans perte.
+Pourquoi : afin que les gros messages, le code et les journaux tiennent dans la limite de contexte du réseau de neurones et consomment moins de jetons.
+Pour qui : pour ceux qui communiquent beaucoup avec des LLM et transfèrent de longs textes, du code et des documents.
+Où télécharger : https://github.com/Bizonrelax/SaberW-2 → Releases (Latest) : SaberW-2.exe (Windows), jar (tout OS avec Java 21+), zip portable (Windows, JRE 21 inclus).
+Environnement : Windows 10/11 x64 — le zip portable ne nécessite aucune installation (JRE inclus) ; exe et jar exigent Java 21+. Linux et macOS — Java 21+.
+Polices : l'interface utilise une grotesque système ; le code et le texte compressé utilisent une police à chasse fixe. Le texte compressé contient des caractères CJK Extension A : leur affichage requiert une police couvrant cette plage — Windows : SimSun ou Microsoft YaHei (installés avec le composant linguistique pour les langues d'Asie orientale), option gratuite universelle : Noto Sans CJK SC. Émojis : Segoe UI Emoji (Windows), Noto Color Emoji (Linux). Si des carrés apparaissent à la place des symboles, installez Noto Sans CJK SC.
+Licence : The Unlicense. Dépôt du projet : https://github.com/Bizonrelax/SaberW-2
