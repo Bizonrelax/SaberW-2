@@ -24,10 +24,16 @@ jobs:
         distribution: 'temurin'
         cache: maven
 
+    - name: Export project version from pom
+      # Формируем тег/имя релиза из версии pom (v${project.version}).
+      shell: bash
+      run: |
+        VER=$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive org.codehaus.mojo:exec-maven-plugin:3.5.0:exec 2>/dev/null || true)
+        if [ -z "$VER" ]; then VER=$(awk '/<version>/{gsub(/.*<version>|<\/version>.*/,""); print; exit}' pom.xml); fi
+        echo "PROJECT_VERSION=$VER" >> "$GITHUB_ENV"
+
     - name: Build with Maven (JAR + EXE через launch4j-maven-plugin)
-      # ВРЕМЕННО: тесты пропущены (-DskipTests), т.к. PhraseCompressionTest падает.
-      # TODO: вернуть тесты после починки упавшего теста.
-      run: mvn -B package --file pom.xml -DskipTests
+      run: mvn -B package --file pom.xml
 
     - name: Download bundled Temurin JRE 21 (Windows x64)
       # Официальная легкая сборка JRE — вкладывается в архив, чтобы EXE запускался без установленной Java.
@@ -59,8 +65,8 @@ jobs:
       continue-on-error: true   # если не хватает прав на Release — сборка всё равно успешна, артефакт загружен
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: latest
-        name: SaberW-2 Latest Build
+        tag_name: v${{ env.PROJECT_VERSION }}
+        name: SaberW 2 v${{ env.PROJECT_VERSION }}
         body: Автоматическая сборка portable-пакета (EXE + JAR + встроенная Temurin JRE 21) для Windows x64.
         files: |
           dist/SaberW-2.exe
