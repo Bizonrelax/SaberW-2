@@ -68,7 +68,10 @@ public final class DictionaryJsonSerializer {
     }
 
     private String writeRoot(ObjectNode node) throws IOException {
-        return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node);
+        // Jackson pretty printer uses the JVM default line separator; on Windows CI that is CRLF,
+        // which changes the measured UTF-8 byte length vs Linux (LF). Normalize to LF so sizeBytes
+        // is deterministic across platforms.
+        return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node).replace("\r\n", "\n");
     }
 
     private ObjectNode buildNode(Root root, DictionaryMetadata metadata) {
