@@ -8,6 +8,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write   # создание/обновление Release и тегов дефолтным GITHUB_TOKEN
+
 jobs:
   build:
     # Windows нужен для корректной работы Launch4j (формирование EXE-заголовка).
@@ -18,7 +21,7 @@ jobs:
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 (pinned)
 
     - name: Set up JDK 21 (Temurin)
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93 # v4.0.0 (pinned)
       with:
         java-version: '21'   # ТЗ требует Java 21+ — см. Docs/Техническое Задание/Основное/ТЗ.md, п.1
         distribution: 'temurin'
@@ -53,7 +56,7 @@ jobs:
 
     - name: Upload portable application package
       # Артефакт Actions: внутри EXE, JAR и папка jre. EXE ищет jre рядом с собой — запускается везде.
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0 (pinned)
       with:
         name: SaberW2-portable-win64
         path: dist/
@@ -63,7 +66,7 @@ jobs:
       # Бинарники хранятся «в репозитории» — в разделе Releases.
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       continue-on-error: true   # если не хватает прав на Release — сборка всё равно успешна, артефакт загружен
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8 (pinned)
       id: release
       with:
         tag_name: v${{ env.PROJECT_VERSION }}
@@ -80,7 +83,6 @@ jobs:
         # релизы при push-событиях (403 Resource not accessible by integration); при pull_request
         # и workflow_dispatch событий он может — но там шаг пропускается, чтобы не плодить
         # релизы/теги v0.2.0-SNAPSHOT из PR-веток.
-        token: ${{ secrets.RELEASE_PAT }}
 
     - name: Publish release via GitHub CLI (main push only)
       # Дефолтный GITHUB_TOKEN на push-событиях умеет создавать релизы (contents: write).
