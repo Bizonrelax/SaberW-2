@@ -84,18 +84,18 @@ jobs:
         # и workflow_dispatch событий он может — но там шаг пропускается, чтобы не плодить
         # релизы/теги v0.2.0-SNAPSHOT из PR-веток.
 
-    - name: Publish release via GitHub CLI (main push only)
-      # Дефолтный GITHUB_TOKEN на push-событиях умеет создавать релизы (contents: write).
+    - name: Verify release assets (main push only)
+      # Финальная проверка: softprops/action-gh-release выше уже создал релиз v<версия>
+      # и загрузил в него SaberW-2.exe и *.jar (overwrite_files, make_latest).
+      # gh release upload dist/* запрещён — в dist/ есть каталог jre/, gh падает на нём.
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         TAG="v${PROJECT_VERSION}"
-        BODY="Автоматическая сборка portable-пакета (EXE + JAR + встроенная Temurin JRE 21) для Windows x64."
-        gh release create "$TAG" --title "SaberW 2 $TAG" --latest --notes "$BODY" \
-          dist/SaberW-2.exe "dist/$(ls dist | grep -E '\\.jar$' | head -1)" --target main || {
-            echo "create failed, trying upload to existing release";
-            gh release upload "$TAG" dist/* --clobber;
-            gh release edit "$TAG" --latest;
-          }
+        gh release view "$TAG"
+        ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+        echo "$ASSETS"
+        echo "$ASSETS" | grep -q '^SaberW-2\.exe$' || { echo "missing exe asset"; exit 1; }
+        echo "$ASSETS" | grep -q '\.jar$'     || { echo "missing jar asset"; exit 1; }
