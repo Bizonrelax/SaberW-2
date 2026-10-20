@@ -90,8 +90,9 @@ class MetadataTest {
         // measure UTF-8 byte length of that variant — it must equal the reported value.
         JsonNode node = new ObjectMapper().readTree(json);
         ((com.fasterxml.jackson.databind.node.ObjectNode) node.path("metadata")).put("sizeBytes", 0);
-        long measured = new ObjectMapper().writerWithDefaultPrettyPrinter()
-                .writeValueAsString(node).getBytes(StandardCharsets.UTF_8).length;
+        String measuredJson = new ObjectMapper().writerWithDefaultPrettyPrinter()
+                .writeValueAsString(node).replace("\r\n", "\n");
+        long measured = measuredJson.getBytes(StandardCharsets.UTF_8).length;
         assertEquals(measured, reported);
     }
 
