@@ -82,34 +82,18 @@ jobs:
         # релизы/теги v0.2.0-SNAPSHOT из PR-веток.
         token: ${{ secrets.RELEASE_PAT }}
 
-    - name: Publish release via API (fallback, если нет RELEASE_PAT)
-      # Дефолтный GITHUB_TOKEN умеет создавать релизы при push с разрешением contents: write.
-      if: |
-        always() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
-        steps.release.outcome != 'success'
+    - name: Publish release via GitHub CLI (main push only)
+      # Дефолтный GITHUB_TOKEN на push-событиях умеет создавать релизы (contents: write).
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        set -o pipefail
         TAG="v${PROJECT_VERSION}"
         BODY="Автоматическая сборка portable-пакета (EXE + JAR + встроенная Temurin JRE 21) для Windows x64."
-        # создать релиз (если уже есть — использовать существующий)
-        curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${{ github.repository }}/releases" \
-          -d "{\"tag_name\":\"$TAG\",\"name\":\"SaberW 2 $TAG\",\"body\":\"$BODY\",\"make_latest\":\"true\"}" >/dev/null \
-          || echo "release already exists or create failed"
-        RID=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
-          "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | grep -m1 '"id"' | tr -dc '0-9')
-        [ -n "$RID" ] || { echo "no release id"; exit 1; }
-        for f in dist/SaberW-2.exe dist/*.jar; do
-          [ -f "$f" ] || continue
-          NAME=$(basename "$f")
-          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
-            --data-binary "@$f" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RID/assets?name=$NAME" >/dev/null \
-            || echo "upload skipped/failed: $NAME"
-        done
-        curl -sf -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${{ github.repository }}/releases/$RID" \
-          -d '{"make_latest":"true"}' >/dev/null || true
+        gh release create "$TAG" --title "SaberW 2 $TAG" --latest --notes "$BODY" \
+          dist/SaberW-2.exe "dist/$(ls dist | grep -E '\\.jar$' | head -1)" --target main || {
+            echo "create failed, trying upload to existing release";
+            gh release upload "$TAG" dist/* --clobber;
+            gh release edit "$TAG" --latest;
+          }
