@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write   # создание/обновление Release и тегов дефолтным GITHUB_TOKEN
+  actions: read     # управление артефактами Actions (варнинг insufficient permissions)
+  checks: write     # публикация результатов проверок
 
 jobs:
   build:
@@ -18,14 +20,23 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 (pinned)
+      uses: actions/checkout@v4
 
     - name: Set up JDK 21 (Temurin)
-      uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93 # v4.0.0 (pinned)
+      uses: actions/setup-java@v4
       with:
         java-version: '21'   # ТЗ требует Java 21+ — см. Docs/Техническое Задание/Основное/ТЗ.md, п.1
         distribution: 'temurin'
-        cache: maven
+
+    - name: Cache Maven repository (~/.m2/repository)
+      # Явный кэш вместо cache: maven у setup-java — ключ содержит hashFiles('**/pom.xml'),
+      # restore-keys — префикс без хэша (устойчивый partial restore, чинит «Failed to restore cache»).
+      uses: actions/cache@v4
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-
 
     - name: Export project version from pom
       # Формируем тег/имя релиза из версии pom (v${project.version}).
@@ -56,7 +67,7 @@ jobs:
 
     - name: Upload portable application package
       # Артефакт Actions: внутри EXE, JAR и папка jre. EXE ищет jre рядом с собой — запускается везде.
-      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0 (pinned)
+      uses: actions/upload-artifact@v4
       with:
         name: SaberW2-portable-win64
         path: dist/
@@ -66,7 +77,7 @@ jobs:
       # Бинарники хранятся «в репозитории» — в разделе Releases.
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       continue-on-error: true   # если не хватает прав на Release — сборка всё равно успешна, артефакт загружен
-      uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8 (pinned)
+      uses: softprops/action-gh-release@v2
       id: release
       with:
         tag_name: v${{ env.PROJECT_VERSION }}
