@@ -56,15 +56,62 @@ public final class DictionaryJsonSerializer {
     private static final String SETTINGS_NODE = "settings";
 
     public String toJson(Root root) throws IOException {
-        // TZ 6.10: serialize the root with metadata.sizeBytes = 0, measure the UTF-8
-        // byte length of the result, then write that value into sizeBytes (no recursion).
+        return toJson(root, Instant.now());
+    }
+
+    /**
+     * TZ 6.10 + deterministic-time fix: the timestamp is captured ONCE per serialization pass and
+     * reused for every date field the serializer emits, so the measured zero-size JSON and the
+     * final JSON differ only in the digits of sizeBytes — no Instant.now() race between the two
+     * passes. sizeBytes is measured from the SAME single-pass string (the one built with
+     * sizeBytes=0), i.e. a single source of truth. Line endings are normalized to LF regardless
+     * of the OS default so the byte length is identical on Linux and Windows.
+     */
+    public String toJson(Root root, Instant fixedNow) throws IOException {
         DictionaryMetadata measured = root.metadata().recompute(root.dictionary());
-        measured.setSizeBytes(0);
-        String zeroSized = writeRoot(buildNode(root, measured));
-        long size = zeroSized.getBytes(StandardCharsets.UTF_8).length;
-        DictionaryMetadata finalMeta = new DictionaryMetadata(measured);
-        finalMeta.setSizeBytes(size);
-        return writeRoot(buildNode(root, finalMeta));
+        // Single source of truth: the value WRITTEN into metadata.sizeBytes is the UTF-8 length
+        // of the FINAL string this method returns — i.e. the zero-size variant of THIS EXACT
+        // serialization (same fixedNow, same LF, same recomputed counters) plus the digit delta
+        // of the unquoted number ("0" placeholder -> N digits changes only those digit bytes,
+        // never the line count). The incoming sizeBytes is explicitly zeroed before measuring,
+        // because recompute() preserves it and a stale value with a different digit width would
+        // inflate the measured string itself. measureSizeBytes solves the same fixed-point
+        // equation from the same base length, so an independent recount reproduces the written
+        // value exactly and the final string's byte length equals the reported sizeBytes. All
+        // passes share one fixedNow, so there is no Instant.now() race between them.
+        long baseLen = measureZeroSizedBytes(root, sized(measured, 0), fixedNow);
+        long size = baseLen;
+        for (int i = 0; i < 3; i++) {
+            long next = baseLen + Long.toString(size).length() - 1;
+            if (next == size) break;
+            size = next;
+        }
+        return writeRoot(buildNode(root, sized(measured, size), fixedNow));
+    }
+
+    private static DictionaryMetadata sized(DictionaryMetadata base, long sizeBytes) {
+        DictionaryMetadata copy = new DictionaryMetadata(base);
+        copy.setSizeBytes(sizeBytes);
+        return copy;
+    }
+
+    /**
+     * Single source of truth for sizeBytes: serialize the root once with metadata.sizeBytes = 0
+     * and return the UTF-8 byte length of that exact string. The value written into sizeBytes by
+     * toJson is exactly what this method returns (same fixedNow semantics, same LF normalization),
+     * so an independent recount reproduces the identical number.
+     */
+    public long measureSizeBytes(Root root) throws IOException {
+        DictionaryMetadata measured = root.metadata().recompute(root.dictionary());
+        return measureZeroSizedBytes(root, sized(measured, 0), Instant.now());
+    }
+
+    private long measureZeroSizedBytes(Root root, DictionaryMetadata measured, Instant fixedNow)
+            throws IOException {
+        DictionaryMetadata zeroed = new DictionaryMetadata(measured);
+        zeroed.setSizeBytes(0);
+        String zeroSized = writeRoot(buildNode(root, zeroed, fixedNow));
+        return zeroSized.getBytes(StandardCharsets.UTF_8).length;
     }
 
     private String writeRoot(ObjectNode node) throws IOException {
@@ -74,7 +121,7 @@ public final class DictionaryJsonSerializer {
         return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node).replace("\r\n", "\n");
     }
 
-    private ObjectNode buildNode(Root root, DictionaryMetadata metadata) {
+    private ObjectNode buildNode(Root root, DictionaryMetadata metadata, Instant fixedNow) {
         ObjectNode node = mapper.createObjectNode();
         node.put("format", FORMAT);
         node.put("formatVersion", FORMAT_VERSION);
@@ -90,7 +137,7 @@ public final class DictionaryJsonSerializer {
         settingsNode.put("minFrequencyForStep2", root.settings().minFrequencyForStep2());
 
         ObjectNode dictNode = node.putObject("dictionary");
-        dictNode.put("updatedAt", Instant.now().toString());
+        dictNode.put("updatedAt", fixedNow.toString());
         dictNode.put("measureUnit", "characters");
         ArrayNode entries = dictNode.putArray("entries");
         for (DictEntry e : root.dictionary().entries()) {

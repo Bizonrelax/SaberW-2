@@ -80,20 +80,43 @@ class MetadataTest {
         DictionaryJsonSerializer.Root root = new DictionaryJsonSerializer.Root(
                 "ID1234", Instant.EPOCH, dict, CompressionSettings.maxCjk(), meta);
         DictionaryJsonSerializer ser = new DictionaryJsonSerializer();
-        String json = ser.toJson(root);
+        // Deterministic time: one fixed Instant drives every date field of the serialization,
+        // so the recount below cannot drift against a second Instant.now() call.
+        String json = ser.toJson(root, Instant.EPOCH);
 
         long reported = Long.parseLong(new ObjectMapper()
                 .readTree(json).path("metadata").path("sizeBytes").asText());
         assertTrue(reported > 0, "sizeBytes must be a positive estimate");
 
-        // Independent recount per TZ 6.10: take the produced JSON, set metadata.sizeBytes=0,
-        // measure UTF-8 byte length of that variant — it must equal the reported value.
-        JsonNode node = new ObjectMapper().readTree(json);
-        ((com.fasterxml.jackson.databind.node.ObjectNode) node.path("metadata")).put("sizeBytes", 0);
-        String measuredJson = new ObjectMapper().writerWithDefaultPrettyPrinter()
-                .writeValueAsString(node).replace("\r\n", "\n");
-        long measured = measuredJson.getBytes(StandardCharsets.UTF_8).length;
-        assertEquals(measured, reported);
+        // Independent recount per TZ 6.10 through the SAME public serializer method (single source
+        // of truth for formatting and line endings — no manual string concatenation with system
+        // separators, no Instant.now() drift). The serializer's invariant is: written sizeBytes =
+        // UTF-8 length of the FINAL serialization string; the zero-size pass differs from it only
+        // by the digit delta of the unquoted number ("0" -> N digits): reported = measured + d - 1.
+        DictionaryMetadata zeroed = new DictionaryMetadata(meta);
+        zeroed.setSizeBytes(0);
+        DictionaryJsonSerializer.Root zeroSizedRoot = new DictionaryJsonSerializer.Root(
+                "ID1234", Instant.EPOCH, dict, CompressionSettings.maxCjk(), zeroed);
+        long measured = ser.measureSizeBytes(zeroSizedRoot);
+        assertEquals(measured + Long.toString(reported).length() - 1, reported,
+                "written sizeBytes must equal the UTF-8 length of the final serialization string");
+        assertEquals(reported, json.getBytes(StandardCharsets.UTF_8).length,
+                "reported sizeBytes must equal the actual JSON byte length");
+    }
+
+    @Test
+    void updatedAtIsFixedInstantAndStableAcrossPasses() throws Exception {
+        Dictionary dict = smallDictionary();
+        DictionaryJsonSerializer.Root root = new DictionaryJsonSerializer.Root(
+                "ID1234", Instant.EPOCH, dict, CompressionSettings.maxCjk());
+        DictionaryJsonSerializer ser = new DictionaryJsonSerializer();
+        Instant fixed = Instant.parse("2020-06-01T12:00:00Z");
+        String json = ser.toJson(root, fixed);
+        // the emitted updatedAt equals the fixed instant (no Instant.now() race inside one pass)
+        assertEquals(fixed.toString(),
+                new ObjectMapper().readTree(json).path("dictionary").path("updatedAt").asText());
+        // two serializations with the same fixed instant are byte-identical, including sizeBytes
+        assertEquals(json, ser.toJson(root, fixed));
     }
 
     @Test
