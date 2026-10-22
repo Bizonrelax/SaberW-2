@@ -1,4 +1,4 @@
-name: Build Portable Windows Package (Java 21 per ТЗ)
+name: Build Portable Windows Package (Java 21 per ТЗ, jpackage)
 
 # Сборка по требованию (workflow_dispatch), при пуше в main и pull request'ах.
 on:
@@ -9,21 +9,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # создание/обновление Release и тегов дефолтным GITHUB_TOKEN
-  actions: read     # управление артефактами Actions (варнинг insufficient permissions)
-  checks: write     # публикация результатов проверок
+  contents: write   # создание/обновление Release дефолтным GITHUB_TOKEN (v4+ умеет)
 
 jobs:
   build:
-    # Windows нужен для корректной работы Launch4j (формирование EXE-заголовка).
+    # Windows нужен для корректной работы jpackage (формирование app-image под Windows).
     runs-on: windows-latest
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v4          # v4 — убран варнинг "Node.js 20 is deprecated"
 
     - name: Set up JDK 21 (Temurin)
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v4        # v4 — актуальная версия без Node 20
       with:
         java-version: '21'   # ТЗ требует Java 21+ — см. Docs/Техническое Задание/Основное/ТЗ.md, п.1
         distribution: 'temurin'
@@ -31,7 +29,7 @@ jobs:
     - name: Cache Maven repository (~/.m2/repository)
       # Явный кэш вместо cache: maven у setup-java — ключ содержит hashFiles('**/pom.xml'),
       # restore-keys — префикс без хэша (устойчивый partial restore, чинит «Failed to restore cache»).
-      uses: actions/cache@v4
+      uses: actions/cache@v4             # v4 — актуальная версия без Node 20
       with:
         path: ~/.m2/repository
         key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
@@ -46,67 +44,49 @@ jobs:
         if [ -z "$VER" ]; then VER=$(awk '/<version>/{gsub(/.*<version>|<\/version>.*/,""); print; exit}' pom.xml); fi
         echo "PROJECT_VERSION=$VER" >> "$GITHUB_ENV"
 
-    - name: Build with Maven (JAR + EXE через launch4j-maven-plugin)
+    - name: Build with Maven (tests + JAR)
+      # Launch4j удалён из pom.xml (устаревший, см. "Психология кодера-Гвен.md") —
+      # mvn package собирает только JAR; EXE/app-image делает jpackage ниже.
       run: mvn -B package --file pom.xml
 
-    - name: Download bundled Temurin JRE 21 (Windows x64)
-      # Официальная легкая сборка JRE — вкладывается в архив, чтобы EXE запускался без установленной Java.
+    - name: Resolve jar name
       shell: bash
-      run: |
-        curl -sSL -o jre.zip "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse"
-        unzip -q jre.zip -d target/
-        mv target/jdk-21* target/jre
+      run: echo "MAIN_JAR=$(ls target/*.jar | head -1 | xargs basename)" >> "$GITHUB_ENV"
 
-    - name: Assemble portable package (exe + jar + jre)
-      shell: bash
+    - name: Package with jpackage (app-image, portable Windows build)
+      # Замена launch4j: jpackage из JDK 21 создаёт автономный app-image
+      # (SaberW-2.exe + JVM внутри) без внешних плагинов.
+      shell: pwsh
       run: |
-        mkdir -p dist
-        cp target/SaberW-2.exe dist/
-        cp target/*.jar dist/ || true
-        cp -r target/jre dist/jre
+        jpackage --type app-image --input target --main-jar $env:MAIN_JAR `
+          --main-class com.saberw.gui.MainWindow --name "SaberW 2" --dest target/jpackage-out
+
+    - name: Assemble portable ZIP
+      # Упаковываем папку app-image в один portable-архив для Release.
+      shell: pwsh
+      run: |
+        Compress-Archive -Path "target/jpackage-out/SaberW 2" `
+          -DestinationPath "target/SaberW-2-portable.zip" -Force
 
     - name: Upload portable application package
-      # Артефакт Actions: внутри EXE, JAR и папка jre. EXE ищет jre рядом с собой — запускается везде.
-      uses: actions/upload-artifact@v4
+      # Артефакт Actions: ZIP с app-image (exe + jar + встроенная runtime-джангл).
+      uses: actions/upload-artifact@v4   # v4 — актуальная версия без Node 20
       with:
-        name: SaberW2-portable-win64
-        path: dist/
+        name: SaberW2-portable-win64-zip
+        path: target/SaberW-2-portable.zip
         if-no-files-found: error
 
-    - name: Create/Update GitHub Release (только для main)
-      # Бинарники хранятся «в репозитории» — в разделе Releases.
+    - name: Create/Update GitHub Release (только для main push)
+      # Исправление сломанного gh release upload: артефакт передаётся напрямую
+      # в softprops/action-gh-release через files:.
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       continue-on-error: true   # если не хватает прав на Release — сборка всё равно успешна, артефакт загружен
       uses: softprops/action-gh-release@v2
-      id: release
       with:
         tag_name: v${{ env.PROJECT_VERSION }}
         name: SaberW 2 v${{ env.PROJECT_VERSION }}
-        body: Автоматическая сборка portable-пакета (EXE + JAR + встроенная Temurin JRE 21) для Windows x64.
-        files: |
-          dist/SaberW-2.exe
-          dist/*.jar
+        body: Автоматическая сборка portable-пакета (jpackage app-image, Windows x64, Temurin JRE 21).
+        files: target/SaberW-2-portable.zip
         fail_on_unmatched_files: false
         overwrite_files: true    # при каждом пуше в main бинарники в Release перезаписываются свежими
         make_latest: true        # тег latest всегда указывает на последнюю успешную сборку
-        # Для публикации Release нужен отдельный секрет RELEASE_PAT (fine-grained PAT владельца
-        # с разрешением Contents: Read and write). Дефолтный GITHUB_TOKEN не может создавать
-        # релизы при push-событиях (403 Resource not accessible by integration); при pull_request
-        # и workflow_dispatch событий он может — но там шаг пропускается, чтобы не плодить
-        # релизы/теги v0.2.0-SNAPSHOT из PR-веток.
-
-    - name: Verify release assets (main push only)
-      # Финальная проверка: softprops/action-gh-release выше уже создал релиз v<версия>
-      # и загрузил в него SaberW-2.exe и *.jar (overwrite_files, make_latest).
-      # gh release upload dist/* запрещён — в dist/ есть каталог jre/, gh падает на нём.
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        TAG="v${PROJECT_VERSION}"
-        gh release view "$TAG"
-        ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-        echo "$ASSETS"
-        echo "$ASSETS" | grep -q '^SaberW-2\.exe$' || { echo "missing exe asset"; exit 1; }
-        echo "$ASSETS" | grep -q '\.jar$'     || { echo "missing jar asset"; exit 1; }

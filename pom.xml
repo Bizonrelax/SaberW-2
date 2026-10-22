@@ -63,38 +63,9 @@
         </configuration>
       </plugin>
 
-      <!-- Упаковка в EXE (Launch4j). Официальный релизный артефакт в Maven Central:
-           com.akathist.maven.plugins.launch4j (репозиторий orphan-oss/launch4j-maven-plugin).
-           Старый com.akiban:launch4j-maven-plugin:2.5.1 отсутствует в Central — из-за него
-           сборка в GitHub Actions падала. -->
-      <plugin>
-        <groupId>com.akathist.maven.plugins.launch4j</groupId>
-        <artifactId>launch4j-maven-plugin</artifactId>
-        <version>2.6.0</version>
-        <executions>
-          <execution>
-            <id>l4j-clui</id>
-            <phase>package</phase>
-            <goals>
-              <goal>launch4j</goal>
-            </goals>
-            <configuration>
-              <headerType>gui</headerType>
-              <outfile>target/SaberW-2.exe</outfile>
-              <jar>target/${project.build.finalName}.jar</jar>
-              <errTitle>SaberW-2 Error</errTitle>
-              <classPath>
-                <mainClass>com.saberw.gui.MainWindow</mainClass>
-                <addDependencies>true</addDependencies>
-              </classPath>
-              <jre>
-                <minVersion>21</minVersion>
-                <path>jre</path> <!-- Launch4j будет искать портативную JRE в локальной папке jre рядом с EXE -->
-              </jre>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
+      <!-- Launch4j удалён (устаревший, см. "Психология кодера-Гвен.md").
+           Упаковка приложения выполняется через jpackage в GitHub Actions
+           (.github/workflows/maven.yml, job на windows-latest). -->
     </plugins>
   </build>
 </project>

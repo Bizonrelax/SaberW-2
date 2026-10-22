@@ -58,13 +58,18 @@ public final class DictionaryJsonSerializer {
     public String toJson(Root root) throws IOException {
         // TZ 6.10: serialize the root with metadata.sizeBytes = 0, measure the UTF-8
         // byte length of the result, then write that value into sizeBytes (no recursion).
+        // Fix CI (MetadataTest): freeze Instant.now() once per toJson() call so both
+        // serialization passes emit the identical "updatedAt" timestamp. Otherwise the
+        // two-pass sizeBytes measurement can straddle a millisecond boundary and produce
+        // non-deterministic JSON (race condition on Windows/Linux CI).
+        Instant fixedTime = Instant.now();
         DictionaryMetadata measured = root.metadata().recompute(root.dictionary());
         measured.setSizeBytes(0);
-        String zeroSized = writeRoot(buildNode(root, measured));
+        String zeroSized = writeRoot(buildNode(root, measured, fixedTime));
         long size = zeroSized.getBytes(StandardCharsets.UTF_8).length;
         DictionaryMetadata finalMeta = new DictionaryMetadata(measured);
         finalMeta.setSizeBytes(size);
-        return writeRoot(buildNode(root, finalMeta));
+        return writeRoot(buildNode(root, finalMeta, fixedTime));
     }
 
     private String writeRoot(ObjectNode node) throws IOException {
@@ -74,7 +79,7 @@ public final class DictionaryJsonSerializer {
         return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node).replace("\r\n", "\n");
     }
 
-    private ObjectNode buildNode(Root root, DictionaryMetadata metadata) {
+    private ObjectNode buildNode(Root root, DictionaryMetadata metadata, Instant updatedAt) {
         ObjectNode node = mapper.createObjectNode();
         node.put("format", FORMAT);
         node.put("formatVersion", FORMAT_VERSION);
@@ -90,7 +95,7 @@ public final class DictionaryJsonSerializer {
         settingsNode.put("minFrequencyForStep2", root.settings().minFrequencyForStep2());
 
         ObjectNode dictNode = node.putObject("dictionary");
-        dictNode.put("updatedAt", Instant.now().toString());
+        dictNode.put("updatedAt", updatedAt.toString());
         dictNode.put("measureUnit", "characters");
         ArrayNode entries = dictNode.putArray("entries");
         for (DictEntry e : root.dictionary().entries()) {
