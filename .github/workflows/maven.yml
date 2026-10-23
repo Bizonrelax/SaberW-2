@@ -60,10 +60,19 @@ jobs:
         OUT="$RUNNER_TEMP/jpackage-out"
         rm -rf "$OUT" && mkdir -p "$OUT"
         JAR=$(basename target/SaberW-2-*.jar | head -n1)
+        # --input: только каталог с зависимостями (target/dependency), без мусора target
+        # (class-файлы, surefire-отчёты, test-classes — иначе всё это попадает в app/).
+        # --main-jar: наш jar кладём в input отдельно. Если dependency-каталога нет
+        # (нет runtime-зависимостей) — создаём пустой, jpackage требует существующий --input.
+        rm -rf "$RUNNER_TEMP/jpackage-input" && mkdir -p "$RUNNER_TEMP/jpackage-input"
+        if [ -d target/dependency ]; then
+          cp -r target/dependency/* "$RUNNER_TEMP/jpackage-input/"
+        fi
+        cp "target/$JAR" "$RUNNER_TEMP/jpackage-input/"
         jpackage --type app-image --name SaberW-2 \
           --main-jar "$JAR" \
           --main-class com.saberw.gui.MainWindow \
-          --input target \
+          --input "$RUNNER_TEMP/jpackage-input" \
           --dest "$OUT"
 
     - name: Archive portable package
