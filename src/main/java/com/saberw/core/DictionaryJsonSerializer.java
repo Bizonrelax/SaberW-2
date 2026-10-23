@@ -28,6 +28,12 @@ public final class DictionaryJsonSerializer {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /**
+     * Timestamp fixed once per serializer instance and reused by every write pass of toJson,
+     * so the measurement pass and the final pass differ only in sizeBytes (deterministic recount).
+     */
+    private String lastUpdatedAt = Instant.now().toString();
+
     public record Root(String id, Instant createdAt, Dictionary dictionary,
                        CompressionSettings settings, DictionaryMetadata metadata) {
 
@@ -56,6 +62,8 @@ public final class DictionaryJsonSerializer {
     private static final String SETTINGS_NODE = "settings";
 
     public String toJson(Root root) throws IOException {
+        // Fresh timestamp per export call; both passes below reuse the same value.
+        this.lastUpdatedAt = Instant.now().toString();
         // TZ 6.10: serialize the root with metadata.sizeBytes = 0, measure the UTF-8
         // byte length of the result, then write that value into sizeBytes (no recursion).
         DictionaryMetadata measured = root.metadata().recompute(root.dictionary());
@@ -90,7 +98,11 @@ public final class DictionaryJsonSerializer {
         settingsNode.put("minFrequencyForStep2", root.settings().minFrequencyForStep2());
 
         ObjectNode dictNode = node.putObject("dictionary");
-        dictNode.put("updatedAt", Instant.now().toString());
+        // TZ 6.10: updatedAt must be deterministic inside one toJson call — the measurement pass
+        // (sizeBytes=0) and the final pass must produce byte-identical JSON except for sizeBytes.
+        // Instant.now() could tick between passes on slow CI (Windows), changing the digit count
+        // ("...47Z" vs "...147Z") and breaking the independent recount invariant by ±3 bytes.
+        dictNode.put("updatedAt", lastUpdatedAt);
         dictNode.put("measureUnit", "characters");
         ArrayNode entries = dictNode.putArray("entries");
         for (DictEntry e : root.dictionary().entries()) {
