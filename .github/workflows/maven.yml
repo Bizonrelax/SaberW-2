@@ -51,20 +51,26 @@ jobs:
 
     - name: Package portable EXE via jpackage per TZ
       shell: bash
+      # jpackage пишет app-image в короткую папку вне workspace (D:\a\_temp\jpackage-out):
+      # внутри D:\a\SaberW-2\SaberW-2\target пути внутренних dll JRE превышают лимит
+      # Windows MAX_PATH (~260) и jpackage падает с "Cannot access file with path
+      # exceeding 32000 characters". Временная папка раннера короче на ~25 символов.
       run: |
+        set -o pipefail
+        OUT="$RUNNER_TEMP/jpackage-out"
+        rm -rf "$OUT" && mkdir -p "$OUT"
         JAR=$(basename target/SaberW-2-*.jar | head -n1)
         jpackage --type app-image --name SaberW-2 \
           --main-jar "$JAR" \
           --main-class com.saberw.gui.MainWindow \
           --input target \
-          --dest target/jpackage-out
+          --dest "$OUT"
 
     - name: Archive portable package
       shell: bash
       run: |
-        cd target/jpackage-out
-        7z a -tzip ../../SaberW-2-portable-win64.zip SaberW-2
-        cd ../..
+        cd "$RUNNER_TEMP/jpackage-out"
+        7z a -tzip "$GITHUB_WORKSPACE/SaberW-2-portable-win64.zip" SaberW-2
 
     - name: Upload portable application package
       # Артефакт Actions: zip с app-image (SaberW-2.exe + встроенная JRE из JDK раннера).
